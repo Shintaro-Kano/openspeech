@@ -4,11 +4,13 @@
 use super::theme::{self, Palette};
 use crate::app::{MicState, VoiceApp, APP_NAME};
 use crate::core::segmenter::{threshold_for_sensitivity, DEFAULT_SENSITIVITY};
+use crate::core::settings::REQUEST_LISTEN_RANGE;
 use egui::{
     pos2, vec2, Align, Color32, Context, Layout, Painter, Pos2, Rect, RichText, Sense, Shape,
     Stroke, TextStyle,
 };
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 const FULL_HEIGHT: f32 = 56.0;
 const MIC_DIAMETER: f32 = 36.0;
@@ -102,21 +104,39 @@ impl VoiceApp {
     fn draw_state(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let live = self.session.live.clone();
         let speaking = live.speaking.load(Ordering::Relaxed);
-        let (text, color) = if self.completing() {
-            // 「ヘイ、クロード」の依頼を送っている間(マイクを止めていても答えは受ける)。
-            ("Claude に依頼中", p.accent)
-        } else if self.call_waiting() {
-            ("依頼をどうぞ", p.accent)
+        let now = Instant::now();
+        let (text, color) = if let Some(elapsed) = self.completing_for(now) {
+            // 「ヘイ、クロード」の依頼を送っている間(マイクを止めていても答えは受ける)。経過は切り捨て。
+            (format!("Claude に依頼中({} 秒)", elapsed.as_secs()), p.accent)
+        } else if self.request_listening() {
+            // 時間が来て、話している途中の発話を待っている間は秒数を出さない。
+            match self.listen_seconds_left(now) {
+                Some(left) => (format!("依頼を聞き取り中(あと {left} 秒)"), p.success),
+                None => ("依頼を聞き取り中".to_string(), p.success),
+            }
+        } else if let Some(left) = self.call_wait_seconds_left(now) {
+            (format!("依頼をどうぞ(あと {left} 秒)"), p.accent)
         } else {
-            match self.mic {
+            let (text, color) = match self.mic {
                 MicState::Off => ("待機中", p.dim),
                 MicState::On if self.iphone_wait_seconds().is_some() => ("接続待ち", p.warning),
                 MicState::On if speaking => ("聞き取り中", p.success),
                 MicState::On if live.pending() > 0 => ("文字にしています", p.accent),
                 MicState::On if self.pending_corrections() > 0 => ("AI 訂正中", p.accent),
                 MicState::On => ("録音中", p.recording),
-            }
+            };
+            (text.to_string(), color)
         };
+        // 秒数の付いた文はメーターより長いので、折り返さずに組む。待ち・聞き取り・依頼中の間は、数が変わっても
+        // 右側が動かないよう、いちばん長い文(最長の聞き取りの初め)の幅に揃える。
+        let galley = small_galley(ui, text, color);
+        let width = if self.call_waiting() || self.completing() {
+            let widest = format!("依頼を聞き取り中(あと {} 秒)", REQUEST_LISTEN_RANGE.end());
+            METER_WIDTH.max(small_galley(ui, widest, color).size().x)
+        } else {
+            METER_WIDTH
+        }
+        .max(galley.size().x);
         let level = live.level();
         // 録音中は雑音の床に応じて動く基準を、止まっているときは静かな場所での基準を印にする。
         let live_threshold = live.threshold();
@@ -127,11 +147,11 @@ impl VoiceApp {
         };
         let active = self.mic != MicState::Off;
         ui.allocate_ui_with_layout(
-            vec2(METER_WIDTH, 34.0),
+            vec2(width, 34.0),
             Layout::top_down(Align::Min),
             |ui| {
                 ui.spacing_mut().item_spacing.y = 5.0;
-                ui.label(RichText::new(text).small().color(color));
+                ui.label(galley);
                 let (rect, _) = ui.allocate_exact_size(vec2(METER_WIDTH, 6.0), Sense::hover());
                 paint_meter(ui.painter(), rect, level, threshold, active, p);
             },
@@ -331,4 +351,14 @@ fn paint_meter(
         [pos2(x, rect.top() - 2.0), pos2(x, rect.bottom() + 2.0)],
         Stroke::new(1.5_f32, p.dim),
     );
+}
+
+/// 状態の文字の小さい字を、折り返さずに組む。
+fn small_galley(ui: &egui::Ui, text: String, color: Color32) -> std::sync::Arc<egui::Galley> {
+    egui::WidgetText::from(RichText::new(text).small().color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        TextStyle::Small,
+    )
 }

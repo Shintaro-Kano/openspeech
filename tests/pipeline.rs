@@ -1,10 +1,10 @@
 //! 発話が入ってからエディターに届くまでの流れを、マイク無しで試す。
 
 use openspeech::app::{recognize_options, MicState, VoiceApp};
-use openspeech::core::assistant::{Assistant, AssistantReply, AssistantRequest};
+use openspeech::core::assistant::{Assistant, AssistantReply, AssistantRequest, ReplyKind, Target};
 use openspeech::core::audio::MicSource;
 use openspeech::core::corrector::{CorrectionRequest, Corrector};
-use openspeech::core::dictionary::{Dictionary, Template};
+use openspeech::core::dictionary::{Dictionary, Module, Template};
 use openspeech::core::editor_model::{CorrectionState, SpanKind};
 use openspeech::core::recognizer::{Recognition, RecognizeOptions, Recognizer};
 use openspeech::core::remote_asr::{Hints, RemoteError, RemoteProvider};
@@ -13,8 +13,12 @@ use openspeech::core::session::Session;
 use openspeech::core::settings::CorrectorBackend;
 use openspeech::core::speechcpp;
 use openspeech::core::store::Store;
+use openspeech::core::template_library::{parse_index, TEMPLATE_LIBRARY_INDEX, TEMPLATE_SHARE_FORM};
 use openspeech::core::transfer::{Delivery, TransferError};
 use openspeech::core::user_data::UserData;
+use openspeech::ui::library::{LibraryLoad, LibraryView};
+use openspeech::ui::{theme, DictTab, LibraryWindow};
+use openspeech::app::IMPORT_WHILE_EDITING;
 use openspeech::core::voice_command::CommandAction;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2529,6 +2533,7 @@ impl AssistantLine {
 
 fn completed(template: &str, text: &str) -> Result<AssistantReply, String> {
     Ok(AssistantReply {
+        kind: ReplyKind::Template,
         template: Some(template.to_string()),
         text: Some(text.to_string()),
         reply: None,
@@ -2609,8 +2614,10 @@ fn a_bare_call_takes_the_next_utterance_as_the_request() {
     assert_eq!(notice_of(&app), "Claude への依頼をどうぞ");
     assert!(app.editor.is_empty());
     say(&mut app, "胸部CTで異常なしの定型文");
-    assert!(!app.call_waiting());
+    assert!(app.request_listening(), "話し始めてから聞き取りの時間が来るまで溜める");
     assert!(app.editor.is_empty(), "依頼は本文に入れない");
+    app.watch_call(Instant::now() + Duration::from_secs(31));
+    assert!(!app.call_waiting());
     pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
     assert!(line.requests()[0].request.contains("異常なしの定型文"), "{}", line.requests()[0].request);
     line.answer(&mut app, completed("胸部CT", CHEST));
@@ -2671,6 +2678,7 @@ fn the_call_lapses_and_a_missing_template_only_notifies() {
     line.answer(
         &mut app,
         Ok(AssistantReply {
+            kind: ReplyKind::None,
             template: None,
             text: None,
             reply: Some("頭部MRIのテンプレートがありません".to_string()),
@@ -2686,6 +2694,256 @@ fn the_call_lapses_and_a_missing_template_only_notifies() {
     assert_eq!(app.editor.text, "右肺上葉に結節を認めます");
     assert_eq!(notice_of(&app), "Claude Code の応答が遅いので待つのをやめました");
     assert!(app.notice.as_ref().unwrap().is_error);
+}
+
+/// 呼びかけだけのあと、話し始めてから設定の秒数(既定 30)の間に届いた発話は、途切れてもまとめて
+/// 1 つの依頼になり、時間が来たら送る。送るまでは本文に何も入らない。
+#[test]
+fn utterances_heard_after_a_bare_call_become_one_request_when_the_time_is_up() {
+    let mut app = app("call-listen");
+    add_template(&mut app, &["前立腺MRI"], PROSTATE);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード");
+    let called = Instant::now();
+    assert_eq!(app.call_wait_seconds_left(called), Some(15));
+    assert!(!app.request_listening());
+    say(&mut app, "前立腺MRIのテンプレートで");
+    let first = Instant::now();
+    assert!(app.request_listening());
+    assert_eq!(app.call_wait_seconds_left(first), None);
+    assert_eq!(app.listen_seconds_left(first), Some(30));
+    assert_eq!(app.live_caption, "依頼: 前立腺MRIのテンプレートで");
+    // 間を置いて(待ちの 15 秒を過ぎて)続きを言っても、同じ依頼に溜める。
+    app.watch_call(first + Duration::from_secs(20));
+    assert!(app.request_listening());
+    say(&mut app, "サイズは5.5かける4.5かける5.0");
+    assert_eq!(app.live_caption, "依頼: 前立腺MRIのテンプレートで サイズは5.5かける4.5かける5.0");
+    app.watch_call(first + Duration::from_secs(29));
+    assert!(app.request_listening());
+    assert!(app.editor.is_empty(), "依頼は本文に入れない");
+    assert!(line.requests().is_empty(), "時間が来るまで送らない");
+
+    app.watch_call(Instant::now() + Duration::from_secs(30));
+    assert!(!app.call_waiting());
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = &line.requests()[0].request;
+    assert!(request.contains("テンプレートで") && request.contains("5.5"), "{request}");
+    line.answer(&mut app, completed("前立腺MRI", PROSTATE));
+    assert_eq!(app.editor.text, PROSTATE);
+}
+
+/// 発話全体が「以上」「以上です」なら、溜めた文をすぐ送る。文に続けて言った「以上です」は終える語ではなく、
+/// 依頼の一部として溜め、時間が来てから送る。
+#[test]
+fn saying_ijou_sends_the_request_at_once() {
+    let mut app = app("call-ijou");
+    add_template(&mut app, &["前立腺MRI"], PROSTATE);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "前立腺MRIのテンプレートでサイズは5.5かける4.5、以上です");
+    assert!(app.request_listening(), "文に続けた「以上です」ではすぐ送らない");
+    assert!(line.requests().is_empty());
+    app.watch_call(Instant::now() + Duration::from_secs(31));
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = line.requests()[0].request.clone();
+    assert!(request.contains("4.5") && request.contains("以上です"), "{request}");
+    line.answer(&mut app, completed("前立腺MRI", PROSTATE));
+
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "前立腺MRIのテンプレートで");
+    say(&mut app, "以上");
+    assert!(!app.call_waiting());
+    pump_until(&mut app, "次の依頼が届く", |_| line.requests().len() == 2);
+    assert!(line.requests()[1].request.contains("テンプレートで"), "{}", line.requests()[1].request);
+    line.answer(&mut app, completed("前立腺MRI", PROSTATE));
+
+    // 何も溜まらないまま「以上」なら送らず、口述に戻る。
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "以上です");
+    assert!(!app.call_waiting());
+    assert_eq!(notice_of(&app), "依頼がなかったので、口述に戻りました");
+    assert_eq!(line.requests().len(), 2);
+}
+
+/// 話し始めた時点(見張りが声を見た時点)から聞き取る。待ちの 15 秒は話し始めに掛ける。
+/// 時間が来たとき声が続いていれば送らず、止んで認識文が届いたらそれも含めて送る(止んでから 1 秒待つ)。
+#[test]
+fn listening_starts_with_the_voice_and_waits_for_the_last_utterance() {
+    let mut app = app("call-listen-voice");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード");
+    let spoke = Instant::now() + Duration::from_secs(14);
+    set_speaking(&app, true);
+    app.watch_call(spoke);
+    assert!(app.request_listening(), "声を見たら聞き取りを始める");
+    assert_eq!(app.listen_seconds_left(spoke), Some(30));
+    set_speaking(&app, false);
+    app.watch_call(spoke + Duration::from_secs(5));
+    assert!(app.call_waiting(), "話し始めていれば待ちの 15 秒では切れない");
+    say(&mut app, "胸部CTで");
+
+    let end = spoke + Duration::from_secs(30);
+    set_speaking(&app, true);
+    app.watch_call(end);
+    assert!(app.request_listening(), "時間が来ても声が続いていれば送らない");
+    assert_eq!(app.listen_seconds_left(end), None, "時間が来たら秒数は出さない");
+    set_speaking(&app, false);
+    say(&mut app, "異常なしの定型文");
+    app.watch_call(end + Duration::from_millis(900));
+    assert!(app.request_listening(), "声が止んで 1 秒たつまでは送らない");
+    assert!(line.requests().is_empty());
+    app.watch_call(end + Duration::from_millis(1100));
+    assert!(!app.call_waiting());
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = &line.requests()[0].request;
+    assert!(request.contains("胸部") && request.contains("異常なしの定型文"), "{request}");
+    line.answer(&mut app, completed("胸部CT", CHEST));
+    assert_eq!(app.editor.text, CHEST);
+
+    // 声を見て聞き取りを始めても(短すぎて捨てた音など)、何も届かないまま時間が来れば口述に戻る。
+    say(&mut app, "ヘイクロード");
+    let spoke = Instant::now();
+    set_speaking(&app, true);
+    app.watch_call(spoke);
+    set_speaking(&app, false);
+    app.watch_call(spoke + Duration::from_secs(31));
+    assert!(!app.call_waiting());
+    assert_eq!(notice_of(&app), "依頼がなかったので、口述に戻りました");
+    assert_eq!(line.requests().len(), 1);
+    assert_eq!(app.editor.text, CHEST);
+}
+
+/// 聞き取りの間の命令語(「転送」)・記号の読み・「〜テンプレート」は依頼の一部として溜め、働かせない。
+#[test]
+fn commands_said_while_listening_are_part_of_the_request() {
+    let mut app = app("call-listen-command");
+    app.data.settings.save_history = false;
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    let fake = FakeTransfer::default();
+    let sender = fake.clone();
+    app.enable_transfer(Arc::new(move |request| {
+        sender.sent.lock().unwrap().push(request.text.to_string());
+        Ok(Delivery::Inserted)
+    }));
+    say(&mut app, "右肺上葉に結節を認めます");
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "胸部CTで異常なし");
+    say(&mut app, "転送");
+    say(&mut app, "矢印");
+    say(&mut app, "胸部CTテンプレート");
+    for _ in 0..3 {
+        app.poll_events();
+    }
+    assert!(app.request_listening());
+    assert!(fake.sent().is_empty(), "転送しない");
+    assert!(!app.transfer_waiting());
+    assert_eq!(app.editor.text, "右肺上葉に結節を認めます", "記号もテンプレートも入れない");
+    app.watch_call(Instant::now() + Duration::from_secs(31));
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = &line.requests()[0].request;
+    assert!(request.contains("転送") && request.contains("テンプレート"), "{request}");
+    assert!(fake.sent().is_empty());
+}
+
+/// Esc は聞き取りを取りやめ、溜めた文を捨てる。本文は変わらない。
+#[test]
+fn esc_discards_what_was_heard() {
+    let mut app = app("call-listen-esc");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "右肺上葉に結節を認めます");
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "胸部CTで異常なし");
+    assert!(app.request_listening());
+    app.take_back();
+    assert!(!app.call_waiting());
+    assert_eq!(notice_of(&app), "Claude への依頼を取りやめました");
+    assert!(app.live_caption.is_empty());
+    assert_eq!(app.editor.text, "右肺上葉に結節を認めます");
+    app.watch_call(Instant::now() + Duration::from_secs(60));
+    for _ in 0..3 {
+        app.poll_events();
+    }
+    assert!(line.requests().is_empty(), "溜めた文は送らない");
+}
+
+/// 残りの秒数は切り上げで、0 を返さない。依頼を送ったあとは送ってからの経過を数える。
+#[test]
+fn the_seconds_left_count_down_without_reaching_zero() {
+    let mut app = app("call-count");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    assert_eq!(app.call_wait_seconds_left(Instant::now()), None);
+    say(&mut app, "ヘイクロード");
+    let now = Instant::now();
+    assert_eq!(app.call_wait_seconds_left(now), Some(15));
+    assert_eq!(app.call_wait_seconds_left(now + Duration::from_millis(14_500)), Some(1));
+    assert_eq!(app.call_wait_seconds_left(now + Duration::from_secs(16)), Some(1));
+    say(&mut app, "胸部CTで");
+    let now = Instant::now();
+    assert_eq!(app.listen_seconds_left(now), Some(30));
+    assert_eq!(app.listen_seconds_left(now + Duration::from_secs(10)), Some(20));
+    assert_eq!(app.listen_seconds_left(now + Duration::from_millis(29_500)), Some(1));
+    assert_eq!(app.listen_seconds_left(now + Duration::from_secs(31)), None);
+    assert_eq!(app.completing_for(now), None);
+
+    say(&mut app, "以上");
+    assert_eq!(app.listen_seconds_left(Instant::now()), None);
+    let sent = Instant::now();
+    let elapsed = app.completing_for(sent + Duration::from_secs(3)).unwrap();
+    assert!(elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(4), "{elapsed:?}");
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    line.answer(&mut app, completed("胸部CT", CHEST));
+    assert_eq!(app.completing_for(Instant::now()), None);
+}
+
+/// user.json の聞き取りの秒数は、読むときに 15〜60 秒の 5 秒刻みに丸める。書いていない古いファイルは 30 秒。
+#[test]
+fn the_listening_time_in_the_user_file_is_kept_in_range() {
+    let cases = [
+        (r#"{"settings":{"request_listen_secs":5}}"#, 15),
+        (r#"{"settings":{"request_listen_secs":999}}"#, 60),
+        (r#"{"settings":{"request_listen_secs":40}}"#, 40),
+        (r#"{"settings":{"request_listen_secs":17}}"#, 15),
+        (r#"{"settings":{"request_listen_secs":18}}"#, 20),
+        (r#"{"settings":{"history_count":50,"call_wait_secs":40}}"#, 30),
+    ];
+    for (i, (json, seconds)) in cases.iter().enumerate() {
+        let home = std::env::temp_dir().join(format!("openspeech-it-listen-{i}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("user.json"), json).unwrap();
+        let app = VoiceApp::with_store(egui::Context::default(), Store::at(&home), None);
+        assert!(app.windows.startup_warning.is_none(), "{json}");
+        assert_eq!(app.data.settings.request_listen(), Duration::from_secs(*seconds), "{json}");
+        if json.contains("history_count") {
+            assert_eq!(app.data.settings.request_listen_secs, 30);
+            assert_eq!(app.data.settings.history_count, 50, "ほかの設定は残り、以前の待ちの設定は読み飛ばす");
+        }
+    }
+}
+
+/// 文末の「以上」("or more")は依頼から削らない(「短径1センチ以上」)。
+#[test]
+fn ijou_at_the_end_of_a_finding_stays_in_the_request() {
+    let mut app = app("call-ijou-more");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード");
+    say(&mut app, "結節は短径1センチ以上");
+    assert!(app.request_listening());
+    assert_eq!(app.live_caption, "依頼: 結節は短径1センチ以上");
+    say(&mut app, "以上です");
+    assert!(!app.call_waiting(), "「以上です」だけの発話で送る");
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = &line.requests()[0].request;
+    assert!(request.contains("短径") && request.ends_with("以上"), "{request}");
+}
+
+fn set_speaking(app: &VoiceApp, on: bool) {
+    app.session.live.speaking.store(on, Ordering::Relaxed);
 }
 
 /// Claude に接続していない、テンプレートが無いときは知らせだけで、本文は変えない。
@@ -2723,6 +2981,7 @@ fn the_wait_survives_a_mic_stop_and_yields_to_a_command() {
     app.stop_mic();
     assert!(app.call_waiting());
     say(&mut app, "胸部CTのテンプレートで異常なし");
+    app.watch_call(Instant::now() + Duration::from_secs(31));
     pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
     assert_eq!(line.requests()[0].request, "胸部 CT のテンプレートで異常なし");
     line.answer(&mut app, completed("胸部CT", CHEST));
@@ -2777,6 +3036,7 @@ fn symbols_and_template_calls_with_a_command_end_the_wait() {
     assert_eq!(app.editor.text, format!("→{CHEST}\n"));
     say(&mut app, "ヘイクロード");
     say(&mut app, "胸部CTのテンプレートで異常なし");
+    app.watch_call(Instant::now() + Duration::from_secs(31));
     pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
     assert_eq!(line.requests()[0].request, "胸部 CT のテンプレートで異常なし", "文のある依頼は Claude へ");
 }
@@ -2817,7 +3077,7 @@ fn esc_cancels_the_call_and_the_request() {
     assert!(app.call_waiting());
     app.take_back();
     assert!(!app.call_waiting());
-    assert_eq!(notice_of(&app), "依頼の待ちを取りやめました");
+    assert_eq!(notice_of(&app), "Claude への依頼を取りやめました");
     assert_eq!(app.editor.text, "右肺上葉に結節を認めます");
 
     say(&mut app, "ヘイクロード、胸部CTのテンプレートで異常なし");
@@ -3216,4 +3476,581 @@ fn a_far_shorter_api_answer_is_not_used() {
     settle(&mut rig.app);
     assert_eq!(rig.app.editor.text, "右肺上葉に結節。胸水なし。肝臓に嚢胞。");
     assert_eq!(*rig.seen.lock().unwrap(), ["右肺上葉に結節。胸水なし。肝臓に嚢胞。"]);
+}
+
+// ---- テンプレートの共有ライブラリ ----
+
+const LIBRARY: &str = r#"{"generated": "2026-11-09T02:00:00Z", "count": 2,
+  "categories": [{"id": "chest", "label": "胸部"}, {"id": "abdomen-pelvis", "label": "腹部・骨盤"}],
+  "templates": [
+    {"keywords": ["胸部CT", "胸部単純CT"], "body": ["胸部単純CT", "共有の文。"],
+     "meta": {"id": "chest-ct", "title": "胸部単純CT", "category": "chest", "author": "Shintaro Kano",
+              "updated": "2026-11-09", "license": "CC0-1.0"}, "file": "templates/chest/chest-ct.json"},
+    {"keywords": ["前立腺MRI"], "body": "前立腺のサイズは〔　〕cm。",
+     "modules": [{"name": "PI-RADS 4", "text": "辺縁域に結節を認めます。"}],
+     "meta": {"id": "prostate-mri", "title": "前立腺MRI", "category": "abdomen-pelvis", "author": "",
+              "updated": "2026-11-09", "license": "CC0-1.0"}, "file": "templates/abdomen-pelvis/prostate-mri.json"}]}"#;
+
+/// 偽の口(取得・ブラウザ・クリップボード)。呼ばれた中身を覚える。
+#[derive(Clone, Default)]
+struct LibraryHooks {
+    fetched: Arc<Mutex<Vec<String>>>,
+    opened: Arc<Mutex<Vec<String>>>,
+    copied: Arc<Mutex<Vec<String>>>,
+}
+
+impl LibraryHooks {
+    fn install(&self, app: &mut VoiceApp, answer: Result<&'static str, &'static str>) {
+        let (fetched, opened, copied) = (self.fetched.clone(), self.opened.clone(), self.copied.clone());
+        app.set_library_hooks(
+            Arc::new(move |url| {
+                fetched.lock().unwrap().push(url.to_string());
+                answer.map(str::to_string).map_err(str::to_string)
+            }),
+            Arc::new(move |url| {
+                opened.lock().unwrap().push(url.to_string());
+                Ok(())
+            }),
+            Arc::new(move |text| {
+                copied.lock().unwrap().push(text.to_string());
+                Ok(())
+            }),
+        );
+    }
+}
+
+fn library_loaded(app: &VoiceApp) -> bool {
+    app.windows
+        .library
+        .as_ref()
+        .is_some_and(|window| !matches!(window.load, LibraryLoad::Loading))
+}
+
+/// 押したときだけ目録を取り、選んだ物を辞書に足す。重なる物は既定で飛ばし、選べば置き換える。
+/// `meta` は辞書ファイルに残る。ネットワークは呼ばない(取得は偽物)。
+#[test]
+fn templates_are_imported_from_the_shared_library() {
+    let mut app = app("library-import");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let hooks = LibraryHooks::default();
+    hooks.install(&mut app, Ok(LIBRARY));
+    for _ in 0..3 {
+        app.poll_events();
+    }
+    assert!(hooks.fetched.lock().unwrap().is_empty(), "押すまで取りに行かない");
+    app.open_template_library();
+    pump_until(&mut app, "目録が届く", library_loaded);
+    assert_eq!(*hooks.fetched.lock().unwrap(), vec![TEMPLATE_LIBRARY_INDEX.to_string()]);
+
+    let picks = {
+        let window = app.windows.library.as_mut().unwrap();
+        window.view.checked.extend([0, 1]);
+        let LibraryLoad::Ready(index) = &window.load else { panic!("{:?}", window.load) };
+        assert_eq!(index.templates.len(), 2);
+        window.view.picks(index)
+    };
+    let (message, imported) = app.import_library_templates(picks);
+    assert_eq!(message, "共有ライブラリから 1 件を取り込みました。キーワードが重なる 1 件は飛ばしました");
+    assert_eq!(imported, 1);
+    assert_eq!(notice_of(&app), message);
+    assert_eq!(app.data.dictionary.templates.len(), 2);
+    assert_eq!(app.data.dictionary.templates[0].body, CHEST, "重なる物は既定で飛ばす");
+    let prostate = &app.data.dictionary.templates[1];
+    assert_eq!(prostate.extra["meta"]["id"], "prostate-mri");
+    assert_eq!(prostate.modules.len(), 1);
+    let saved = std::fs::read_to_string(app.store.dictionary_path()).unwrap();
+    assert!(saved.contains("prostate-mri") && !saved.contains("templates/abdomen-pelvis"), "{saved}");
+
+    // 取り込んだ物は「〜テンプレート」で呼べる。
+    say(&mut app, "前立腺MRIテンプレート");
+    assert_eq!(app.editor.text, "前立腺のサイズは〔　〕cm。");
+
+    let picks = {
+        let window = app.windows.library.as_mut().unwrap();
+        window.view.checked = [0].into();
+        window.view.replace.insert(0);
+        let LibraryLoad::Ready(index) = &window.load else { unreachable!() };
+        window.view.picks(index)
+    };
+    let (message, _) = app.import_library_templates(picks);
+    assert_eq!(message, "共有ライブラリから 1 件を取り込みました(手元の 1 件を置き換え)");
+    assert_eq!(app.data.dictionary.templates.len(), 2);
+    assert_eq!(app.data.dictionary.templates[0].body, "胸部単純CT\n共有の文。");
+}
+
+/// 取り込むと 100 件を超えるときは、先頭 100 件だけ Claude に送ると知らせる。取得の失敗は知らせだけ。
+#[test]
+fn the_library_warns_past_one_hundred_templates_and_reports_failures() {
+    let mut app = app("library-limit");
+    for n in 0..99 {
+        add_template(&mut app, &[&format!("検査{n}")], "文");
+    }
+    let hooks = LibraryHooks::default();
+    hooks.install(&mut app, Ok(LIBRARY));
+    app.open_template_library();
+    pump_until(&mut app, "目録が届く", library_loaded);
+    let picks = {
+        let window = app.windows.library.as_mut().unwrap();
+        window.view.checked.extend([0, 1]);
+        let LibraryLoad::Ready(index) = &window.load else { unreachable!() };
+        window.view.picks(index)
+    };
+    let (message, _) = app.import_library_templates(picks);
+    assert!(
+        message.contains("101 件になりました") && message.contains("先頭 100 件だけ Claude に送ります"),
+        "{message}"
+    );
+
+    let mut app = app_with_library_failure();
+    pump_until(&mut app, "失敗が届く", library_loaded);
+    let Some(LibraryLoad::Failed(error)) = app.windows.library.as_ref().map(|w| &w.load) else {
+        panic!("取得の失敗を窓に出す");
+    };
+    assert_eq!(error, "共有ライブラリに接続できません: 試験");
+    assert!(app.notice.as_ref().unwrap().is_error);
+    assert_eq!(app.data.dictionary.templates.len(), 0, "辞書は変えない");
+}
+
+fn app_with_library_failure() -> VoiceApp {
+    let mut app = app("library-failure");
+    LibraryHooks::default().install(&mut app, Err("共有ライブラリに接続できません: 試験"));
+    app.open_template_library();
+    app
+}
+
+/// 「共有…」は投稿フォームの URL に項目を埋めて開くだけ。長ければ本文とモジュールの文はクリップボードへ。
+#[test]
+fn sharing_a_template_opens_the_form_in_the_browser() {
+    let mut app = app("library-share");
+    add_template(&mut app, &["胸部CT", "胸部単純CT"], CHEST);
+    add_template(&mut app, &["腹部CT"], &"肝臓に異常なし。\n".repeat(150));
+    let hooks = LibraryHooks::default();
+    hooks.install(&mut app, Ok(LIBRARY));
+
+    let message = app.share_template(0).unwrap();
+    assert_eq!(message, "投稿フォームをブラウザで開きました。内容を確かめて送信してください");
+    let opened = hooks.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0].starts_with(TEMPLATE_SHARE_FORM), "{}", opened[0]);
+    assert!(opened[0].contains("&exam=%E8%83%B8") && opened[0].contains("&findings="), "{}", opened[0]);
+    assert!(hooks.copied.lock().unwrap().is_empty());
+
+    let message = app.share_template(1).unwrap();
+    assert_eq!(
+        message,
+        "本文と所見モジュールはクリップボードにあります。区切り線の上を「正常所見」、下を「所見モジュール」の欄に貼り付けてください"
+    );
+    assert_eq!(notice_of(&app), message);
+    let opened = hooks.opened.lock().unwrap().clone();
+    assert!(opened[1].len() <= 6000 && !opened[1].contains("&findings="), "{}", opened[1].len());
+    assert!(hooks.copied.lock().unwrap()[0].starts_with("肝臓に異常なし。"));
+    assert!(hooks.fetched.lock().unwrap().is_empty(), "共有では目録を取らない");
+}
+
+/// 辞書の窓でテンプレートを編集している間は取り込まない(置き換えで番号がずれ、保存が別の物を上書きするため)。
+#[test]
+fn nothing_is_imported_while_a_template_is_being_edited() {
+    let mut app = app("library-editing");
+    add_template(&mut app, &["胸部単純CT"], CHEST);
+    add_template(&mut app, &["胸部CT"], "二つ目");
+    let hooks = LibraryHooks::default();
+    hooks.install(&mut app, Ok(LIBRARY));
+    app.open_dict_tool(Some(DictTab::Templates));
+    let template = app.data.dictionary.templates[1].clone();
+    app.windows.dict.as_mut().unwrap().begin_edit(1, &template);
+    app.open_template_library();
+    pump_until(&mut app, "目録が届く", library_loaded);
+    let picks = {
+        let window = app.windows.library.as_mut().unwrap();
+        window.view.checked.extend([0, 1]);
+        window.view.replace.insert(0);
+        let LibraryLoad::Ready(index) = &window.load else { unreachable!() };
+        window.view.picks(index)
+    };
+    let before = app.data.dictionary.clone();
+    let (message, imported) = app.import_library_templates(picks);
+    assert_eq!((message.as_str(), imported), (IMPORT_WHILE_EDITING, 0));
+    assert_eq!(app.data.dictionary, before, "辞書は変えない");
+    assert!(app.notice.as_ref().unwrap().is_error);
+    assert_eq!(notice_of(&app), IMPORT_WHILE_EDITING);
+}
+
+/// 窓を閉じたあとに届いた取得の失敗は知らせない。
+#[test]
+fn a_failure_after_the_window_closed_is_not_reported() {
+    let mut app = app("library-closed");
+    let (release, gate) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let returned = Arc::new(AtomicUsize::new(0));
+    let done = returned.clone();
+    app.set_library_hooks(
+        Arc::new(move |_| {
+            gate.lock().unwrap().recv().unwrap();
+            done.fetch_add(1, Ordering::SeqCst);
+            Err("共有ライブラリに接続できません: 試験".to_string())
+        }),
+        Arc::new(|_| Ok(())),
+        Arc::new(|_| Ok(())),
+    );
+    app.open_template_library();
+    app.windows.library = None;
+    release.send(()).unwrap();
+    let limit = Instant::now() + Duration::from_secs(5);
+    while returned.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < limit, "取得が返らない");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(10));
+        app.poll_events();
+    }
+    assert!(app.notice.is_none(), "{:?}", app.notice.as_ref().map(|n| &n.text));
+}
+
+/// 辞書の窓のテンプレート一覧と共有ライブラリの一覧は、長いキーワード・モジュール名・本文・題名・投稿者名の
+/// 行があっても窓を広げない(Grid の列の幅が中身で決まり、窓が最大幅を超えて画面の両側で切れていた)。
+/// GUI は開かず、egui の配置だけを回して窓の幅を測る。
+#[test]
+fn long_template_rows_do_not_widen_the_windows() {
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    let home = std::env::temp_dir().join(format!("openspeech-it-wide-rows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let mut app = VoiceApp::with_store(ctx.clone(), Store::at(&home), None);
+    let width = |app: &mut VoiceApp, title: &str, draw: fn(&mut VoiceApp, &egui::Context)| {
+        for _ in 0..5 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| draw(app, ctx));
+        }
+        ctx.memory(|memory| memory.area_rect(egui::Id::new(title)))
+            .unwrap_or_else(|| panic!("{title} の窓が無い"))
+            .width()
+    };
+    let module = |name: String| Module { name, text: "所見の文。".to_string(), ..Module::default() };
+
+    app.open_dict_tool(Some(DictTab::Templates));
+    let plain = width(&mut app, "辞書", VoiceApp::draw_dict_tool);
+    // 実物の辞書の最長(キーワード 65 字・モジュール 5 件)と、入力の上限いっぱい(キーワード 40 字 × 20・モジュール 30 件)。
+    let real: Vec<String> = ["腹部骨盤CT", "腹部骨盤単純CT", "腹部CT", "骨盤CT", "abdomen pelvis CT", "abdominal CT", "AP CT", "CT AP"]
+        .iter()
+        .map(|k| k.to_string())
+        .collect();
+    app.data.dictionary.templates.push(Template {
+        keywords: real.clone(),
+        body: format!("{}\n2 行目。", "腹部骨盤単純CTを撮像しました。肝臓、胆嚢、膵臓、脾臓、腎臓に異常を認めません。"),
+        modules: ["肺結節", "すりガラス影", "胸水・心嚢水", "縦隔リンパ節腫大", "肺気腫・気管支壁肥厚"]
+            .iter()
+            .map(|n| module(n.to_string()))
+            .collect(),
+        ..Template::default()
+    });
+    let longest: Vec<String> = (0..20).map(|i| format!("{i:02}{}", "とても長い別名のキーワード".repeat(3)).chars().take(40).collect()).collect();
+    app.data.dictionary.templates.push(Template {
+        keywords: longest.clone(),
+        body: "改行の無い長い本文。".repeat(30),
+        modules: (0..30).map(|i| module(format!("長い名前の所見モジュール{i:02}"))).collect(),
+        ..Template::default()
+    });
+    let wide = width(&mut app, "辞書", VoiceApp::draw_dict_tool);
+    assert!(app.windows.dict.is_some());
+    assert!(wide <= plain + 0.5, "辞書の窓が広がった: {plain} → {wide}");
+
+    let library = |templates: serde_json::Value| LibraryWindow {
+        load: LibraryLoad::Ready(
+            parse_index(
+                &serde_json::json!({
+                    "generated": "2026-11-09T02:00:00Z",
+                    "categories": [{"id": "chest", "label": "胸部"}],
+                    "templates": templates,
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        ),
+        view: LibraryView::default(),
+    };
+    let entry = |keywords: &[String], title: &str, author: &str| {
+        serde_json::json!({
+            "keywords": keywords,
+            "body": ["本文の 1 行目。".repeat(20), "2 行目。".to_string()],
+            "modules": (0..5).map(|i| serde_json::json!({"name": format!("長い名前の所見モジュール{i}"), "text": "文。"})).collect::<Vec<_>>(),
+            "meta": {"id": title, "title": title, "category": "chest", "author": author,
+                     "updated": "2026-11-09", "license": "CC0-1.0"},
+        })
+    };
+    app.windows.library = Some(library(serde_json::json!([entry(&["胸部CT".to_string()], "胸部CT", "")])));
+    let plain = width(&mut app, "共有ライブラリから取り込む", VoiceApp::draw_template_library);
+    // 手元の 2 件と重なり(「重なり 2 件: 置き換える」)、題名・投稿者名(GitHub の利用者名は 39 字まで)が長い物。
+    let both: Vec<String> = real.iter().chain(&longest).cloned().collect();
+    let mut window = library(serde_json::json!([
+        entry(&both[..20], &"とても長い題名のテンプレート".repeat(5), &"a".repeat(39)),
+        entry(&real, "腹部骨盤CT", "Shintaro-Kano"),
+    ]));
+    window.view.replace.insert(0);
+    window.view.focus = Some(0);
+    app.windows.library = Some(window);
+    let wide = width(&mut app, "共有ライブラリから取り込む", VoiceApp::draw_template_library);
+    assert!(app.windows.library.is_some());
+    assert!(wide <= plain + 0.5, "共有ライブラリの窓が広がった: {plain} → {wide}");
+}
+
+// ---- 「ヘイクロード」の文章の手直し(post-release §7) ----
+
+/// 手直しの答え。
+fn edited(text: &str, reply: Option<&str>) -> Result<AssistantReply, String> {
+    Ok(AssistantReply {
+        kind: ReplyKind::Edit,
+        template: None,
+        text: Some(text.to_string()),
+        reply: reply.map(str::to_string),
+        replace: false,
+    })
+}
+
+/// 依頼を言い、届くまで回す。届いた依頼を返す。
+fn ask(app: &mut VoiceApp, line: &AssistantLine, spoken: &str) -> AssistantRequest {
+    let count = line.requests().len();
+    say(app, spoken);
+    pump_until(app, "依頼が届く", |_| line.requests().len() == count + 1);
+    line.requests().remove(count)
+}
+
+/// 選択範囲があれば、それを対象(selected)として添え、手直しの答えで選択だけを置き換える。前後は変えず、
+/// 新しい発話は fixed(学習・AI 訂正に出さない)で、変わった字に AI 訂正の色を付け、カーソルを末尾に置く
+/// (選んだままだと、次に打った 1 字で整えた文が置き換わる)。直後の Esc で元に戻り、次の Esc でも消えない。
+#[test]
+fn a_selected_range_is_edited_in_place_and_esc_restores_it() {
+    let mut app = app("edit-selection");
+    app.data.settings.save_history = false;
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "胸部単純CT。");
+    say(&mut app, "右肺上葉に結節を認めまる。");
+    say(&mut app, "胸水なし。");
+    let selected = "右肺上葉に結節を認めまる。";
+    let (before, after) = app.editor.text.split_once(selected).expect("選ぶ文");
+    let (before, after) = (before.to_string(), after.to_string());
+    let start = before.chars().count();
+    let end = start + selected.chars().count();
+    app.editor.selection = (start, end);
+    let request = ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    assert_eq!(
+        request.target,
+        Some(Target { text: selected.to_string(), selected: true, truncated: false })
+    );
+    line.answer(&mut app, edited("右肺上葉に結節を認めます。", None));
+    assert_eq!(app.editor.text, format!("{before}右肺上葉に結節を認めます。{after}"));
+    let last = app.editor.utterances.last().unwrap().clone();
+    assert_eq!((last.start, last.end), (start, end), "選択の範囲だけを置き換える");
+    assert!(app.editor.is_fixed(last.id), "学習の比較対象にしない");
+    assert_eq!(app.editor.selection, (end, end), "選ばずに、カーソルを末尾に置く");
+    let marked: Vec<(usize, usize)> = app
+        .editor
+        .spans
+        .iter()
+        .filter(|s| s.kind == SpanKind::Corrected)
+        .map(|s| (s.start, s.end))
+        .collect();
+    assert_eq!(marked, vec![(end - 2, end - 1)], "変わった字(「る」→「す」)に色を付ける");
+    assert_eq!(app.pending_corrections(), 0, "AI 訂正には出さない");
+    let notice = notice_of(&app);
+    assert!(notice.starts_with("文章を整えました(変更 1 箇所、") && notice.ends_with(" 秒)"), "{notice}");
+
+    app.take_back();
+    assert_eq!(app.editor.text, format!("{before}{selected}{after}"), "直後の Esc で元の文に戻す");
+    assert_eq!(notice_of(&app), "手直しを戻しました");
+    assert_eq!(app.editor.selection, (end, end));
+    app.take_back();
+    assert_eq!(app.editor.text, format!("{before}{selected}{after}"), "戻した文も Esc では消さない");
+    assert_eq!(notice_of(&app), "手直しした文は Esc では消せません");
+}
+
+/// 選択が無ければ全文を対象(selected でない)にする。指摘は知らせに続ける。続けて話した文は末尾に入る。
+/// そのあとの Esc は手直しを戻さず直前の発話を消し、次の Esc は全文の手直しを消さない(文書全体が消えない)。
+#[test]
+fn without_a_selection_the_whole_text_is_edited() {
+    let mut app = app("edit-whole");
+    app.data.settings.save_history = false;
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "肺に結節結節を認めます。");
+    say(&mut app, "胸水なし。");
+    let request = ask(&mut app, &line, "ヘイクロード、文章を整えて");
+    let whole = "肺に結節結節を認めます。胸水なし。";
+    assert_eq!(
+        request.target,
+        Some(Target { text: whole.to_string(), selected: false, truncated: false })
+    );
+    line.answer(&mut app, edited("肺に結節を認めます。胸水なし。", Some("部位の記載がありません")));
+    assert_eq!(app.editor.text, "肺に結節を認めます。胸水なし。");
+    assert!(notice_of(&app).ends_with("。指摘: 部位の記載がありません"), "{}", notice_of(&app));
+    assert_eq!(app.editor.selection, (15, 15));
+
+    say(&mut app, "経過観察。");
+    assert_eq!(app.editor.text, "肺に結節を認めます。胸水なし。経過観察。");
+    app.take_back();
+    assert_eq!(app.editor.text, "肺に結節を認めます。胸水なし。", "別の入力のあとは直前の発話を消す");
+    app.take_back();
+    assert_eq!(app.editor.text, "肺に結節を認めます。胸水なし。", "手直しは戻さず、消しもしない");
+    assert_eq!(notice_of(&app), "手直しした文は Esc では消せません");
+
+    // 手で 1 字直したあとも同じ(戻せないので控えを捨て、全文は消さない)。
+    ask(&mut app, &line, "ヘイクロード、文章を整えて");
+    line.answer(&mut app, edited("肺に結節を認めます。胸水はありません。", None));
+    let typed = app.editor.text.replacen("結節を", "結節影を", 1);
+    app.editor.sync_from_input(&typed, (4, 4));
+    app.take_back();
+    assert_eq!(app.editor.text, typed);
+    assert_eq!(notice_of(&app), "手直しした文は Esc では消せません");
+}
+
+/// 全文が 3000 字を超えるときは先頭 3000 字だけを添え、その範囲だけを置き換える。
+#[test]
+fn a_long_text_sends_only_its_head() {
+    let mut app = app("edit-long");
+    let line = enable_fake_assistant(&mut app);
+    let head = "あ".repeat(3000);
+    say(&mut app, &format!("{head}いいい"));
+    let request = ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    let target = request.target.unwrap();
+    assert_eq!((target.text.chars().count(), target.selected, target.truncated), (3000, false, true));
+    line.answer(&mut app, edited(&format!("{}う", "あ".repeat(2999)), None));
+    assert_eq!(app.editor.text, format!("{}ういいい", "あ".repeat(2999)), "先頭の範囲だけ置き換え、残りは触らない");
+}
+
+/// 依頼に左右の語が無いのに左右が変わった答えは使わない。「右を左に直して」なら当てる。
+#[test]
+fn an_edit_that_flips_the_side_is_used_only_when_asked() {
+    let mut app = app("edit-side");
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "右肺に結節を認めます。");
+    ask(&mut app, &line, "ヘイクロード、文章を整えて");
+    line.answer(&mut app, edited("左肺に結節を認めます。", None));
+    assert_eq!(app.editor.text, "右肺に結節を認めます。");
+    assert_eq!(notice_of(&app), "左右が変わった答えなので使いませんでした");
+
+    ask(&mut app, &line, "ヘイクロード、右を左に直して");
+    line.answer(&mut app, edited("左肺に結節を認めます。", None));
+    assert_eq!(app.editor.text, "左肺に結節を認めます。");
+}
+
+/// 長さの門(対象の字数 × 2 + 100 字まで)と、直すところが無い答え。
+#[test]
+fn edits_that_are_too_long_or_unchanged_are_not_applied() {
+    let mut app = app("edit-length");
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "胸水なし。");
+    ask(&mut app, &line, "ヘイクロード、文章を整えて");
+    line.answer(&mut app, edited(&"胸水".repeat(56), None));
+    assert_eq!(app.editor.text, "胸水なし。");
+    assert_eq!(notice_of(&app), "答えが長すぎるので使いませんでした");
+
+    ask(&mut app, &line, "ヘイクロード、文章を整えて");
+    line.answer(&mut app, edited("胸水なし。", Some("直すところはありません")));
+    assert_eq!(app.editor.text, "胸水なし。");
+    assert_eq!(notice_of(&app), "直すところはありませんでした", "同じ意味の返事は重ねない");
+    let id = app.editor.utterances.last().unwrap().id;
+    assert!(!app.editor.is_fixed(id), "置き換えていない");
+}
+
+/// エディターが空なら対象を添えず、手直しの答えには知らせだけ。
+#[test]
+fn an_edit_without_a_target_only_notifies() {
+    let mut app = app("edit-empty");
+    add_template(&mut app, &["胸部CT"], CHEST);
+    let line = enable_fake_assistant(&mut app);
+    let request = ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    assert_eq!(request.target, None);
+    line.answer(&mut app, edited("何かの文。", None));
+    assert!(app.editor.is_empty());
+    assert_eq!(notice_of(&app), "対象の文章がありません");
+}
+
+/// 送ったあとに対象の範囲が変わった(口述や手直しが入った)ら当てない。範囲の後ろに続けた口述なら当てる。
+#[test]
+fn an_edit_is_not_applied_when_the_text_changed_meanwhile() {
+    let mut app = app("edit-changed");
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "結節を認めまる。");
+    ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    app.editor.selection = (0, 0);
+    say(&mut app, "右肺に");
+    line.answer(&mut app, edited("結節を認めます。", None));
+    assert_eq!(app.editor.text, "右肺に結節を認めまる。");
+    assert_eq!(notice_of(&app), "文章が変わったので手直しを当てませんでした");
+
+    ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    app.editor.move_end();
+    say(&mut app, "胸水なし。");
+    line.answer(&mut app, edited("右肺に結節を認めます。", None));
+    assert_eq!(app.editor.text, "右肺に結節を認めます。胸水なし。", "後ろに続けた口述は残る");
+}
+
+/// テンプレートが無くても、エディターに文があれば手直しを頼める(空なら今まで通り断る)。
+#[test]
+fn an_edit_can_be_asked_without_templates() {
+    let mut app = app("edit-no-templates");
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード、誤字を直して");
+    assert!(notice_of(&app).starts_with("テンプレートが登録されていません"), "{}", notice_of(&app));
+    assert!(line.requests().is_empty());
+    say(&mut app, "結節を認めまる。");
+    let request = ask(&mut app, &line, "ヘイクロード、誤字を直して");
+    assert!(request.target.is_some());
+}
+
+/// AI 訂正を待っている発話があるうちの依頼は、訂正が戻ってから送る(対象は訂正後の文)。帯で待っていると示し、
+/// Esc で取りやめられる。
+#[test]
+fn a_request_waits_for_pending_corrections() {
+    let (mut app, answer, _transfer) = wired_app("edit-after-correction");
+    // 学習すると訂正役と一緒に補完役を作り直し、偽の補完役が外れるので、学習は切っておく。
+    app.data.settings.learning.enabled = false;
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "右配上葉に結節。");
+    assert_eq!(app.pending_corrections(), 1);
+    say(&mut app, "ヘイクロード、文章を整えて");
+    app.poll_events();
+    assert!(line.requests().is_empty(), "訂正が戻るまで送らない");
+    assert_eq!(app.live_caption, "依頼: 文章を整えて(訂正を待っています)");
+    say(&mut app, "ヘイクロード、誤字を直して");
+    assert_eq!(notice_of(&app), "前の依頼を処理しています。終わってからもう一度どうぞ");
+    answer.send(Ok("右肺上葉に結節。".to_string())).unwrap();
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let target = line.requests()[0].target.clone().unwrap();
+    assert_eq!(target.text, "右肺上葉に結節。", "対象は訂正後の文");
+    line.answer(&mut app, edited("右肺上葉に結節を認めます。", None));
+    assert_eq!(app.editor.text, "右肺上葉に結節を認めます。", "訂正が先に戻っても手直しが当たる");
+
+    say(&mut app, "左腎に嚢胞。");
+    say(&mut app, "ヘイクロード、文章を整えて");
+    app.take_back();
+    assert_eq!(notice_of(&app), "Claude への依頼を取りやめました");
+    answer.send(Ok("左腎に嚢胞。".to_string())).unwrap();
+    pump_until(&mut app, "訂正が戻る", |app| app.pending_corrections() == 0);
+    for _ in 0..5 {
+        app.poll_events();
+    }
+    assert_eq!(line.requests().len(), 1, "取りやめた依頼は送らない");
+}
+
+/// 依頼の指示(`request.md`)の変更を見張り、補完役を作り直して指示文に届ける。注釈は送らず、字数にも数えない。
+#[test]
+fn a_saved_request_guidance_reaches_the_assistant() {
+    let mut app = app("request-guidance");
+    app.store.save_api_key("k").unwrap();
+    app.global.corrector.backend = CorrectorBackend::ApiKey;
+    app.rebuild_assistant();
+    let instructions = |app: &VoiceApp| app.assistant_instructions().unwrap();
+    assert!(instructions(&app).contains("依頼への答え方の指示:\n# 役割"), "ファイルが無ければ既定の指示");
+    assert_eq!(app.request_guidance_chars, Some(0));
+
+    let path = app.store.ensure_request_guidance().unwrap();
+    std::fs::write(&path, "<!-- 自分用のメモ -->\n試験の依頼の指示\n").unwrap();
+    app.watch_files(Instant::now() + Duration::from_secs(2));
+    assert!(instructions(&app).contains("依頼への答え方の指示:\n試験の依頼の指示"), "{}", instructions(&app));
+    assert!(!instructions(&app).contains("# 役割") && !instructions(&app).contains("自分用のメモ"));
+    assert_eq!(app.request_guidance_chars, Some(8), "注釈は数えない");
+    assert!(app.assistant_instructions().unwrap().contains("テンプレート一覧:"));
 }

@@ -24,11 +24,13 @@ pub fn usable_key(key: &str) -> bool {
             .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\' && c != '\'')
 }
 
-/// Messages API に送る本文。考える量は最小(effort low)、出力は `schema` の形に固定する。
+/// Messages API に送る本文。考える量は `effort`(訂正役は low、補完役は選択範囲の手直しだけ medium)、
+/// 出力は `schema` の形に固定する。
 /// system は 1 つ目(規則・用語集)だけキャッシュし、変わりやすいもの(`uncached`)は 2 つ目に分けて載せる。
 pub(crate) fn messages_body(
     model: &str,
     max_tokens: u32,
+    effort: &str,
     system: &str,
     uncached: Option<&str>,
     user_message: String,
@@ -48,7 +50,7 @@ pub(crate) fn messages_body(
         "system": system_blocks,
         "messages": [{"role": "user", "content": user_message}],
         "output_config": {
-            "effort": "low",
+            "effort": effort,
             "format": {
                 "type": "json_schema",
                 "schema": schema
@@ -188,11 +190,13 @@ mod tests {
 
     #[test]
     fn the_body_caches_only_the_first_system_block() {
-        let body = messages_body("m", 10, "規則", Some("例"), "文".to_string(), json!({}));
+        let body = messages_body("m", 10, "low", "規則", Some("例"), "文".to_string(), json!({}));
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert!(body["system"][1].get("cache_control").is_none());
         assert_eq!(body["max_tokens"], 10);
-        let body = messages_body("m", 10, "規則", None, "文".to_string(), json!({}));
+        assert_eq!(body["output_config"]["effort"], "low");
+        let body = messages_body("m", 10, "medium", "規則", None, "文".to_string(), json!({}));
         assert_eq!(body["system"].as_array().unwrap().len(), 1);
+        assert_eq!(body["output_config"]["effort"], "medium", "考える量は呼ぶ側が決める");
     }
 }

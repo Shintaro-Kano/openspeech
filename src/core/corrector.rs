@@ -37,6 +37,8 @@ const PROTECTED_HEADER: &str =
 pub const MAX_CONTEXT_CHARS: usize = 200;
 /// 訂正後の文は短いので、考える分を含めてもこれで足りる。
 const MAX_TOKENS: u32 = 1024;
+/// 考える量。発話ごとに送るので最小にする。
+const EFFORT: &str = "low";
 const TIMEOUT_SECONDS: &str = "12";
 /// 誤りの知らせに入れる役の名前。
 const ROLE_NAME: &str = "訂正役";
@@ -174,7 +176,7 @@ impl Corrector for ClaudeCodeCorrector {
             &self.work_dir,
             &self.model,
             &self.system,
-            &output_schema(),
+            proc::Answer { schema: &output_schema(), effort: EFFORT },
             &message,
             CLAUDE_CODE_TIMEOUT,
         )?;
@@ -212,16 +214,21 @@ const FRAME: &str =
      直すところが無ければ認識文をそのまま返す。短い文でも説明や前置き、断りは書かない。\n";
 
 /// 直し方の指示。利用者が `guidance.md` で自由に書き換える。ファイルが無いか空ならこれをそのまま使い、
-/// 「AI への指示を編集…」で初めて作るファイルの中身もこれ(2026-11-08 までは規則をコードで固定していた)。
+/// 「訂正の指示を編集…」で初めて作るファイルの中身もこれ(2026-11-08 までは規則をコードで固定していた)。
+/// 先頭の説明は `<!-- -->` の注釈で、送らない(`guidance::strip_comments`)。
 /// 表記の決まりを読影の文に限っているのは、AI の直しから語の組を学習するので、文体の書き換えを招くと害になるため。
 /// 「よく使う語」は認識側の `recognizer::FIELD_WORDS` と同じ(試験で確かめる)。
 pub const DEFAULT_GUIDANCE: &str = "\
+<!--
 ここに書いたことは、認識した文を直すときの指示として AI にそのまま渡されます。自由に書き換えられます。
 空にするとアプリの既定(初めに書かれていたこの内容)が使われます。
 アプリが決めているのは、直した文だけを返して説明を書かないという出力の形と、左右が変わった答えを使わない守りだけです。
+この <!-- --> で囲んだ部分は AI に送られません。
+-->
 
 # 直してよいもの
 - 同音・類似音の語の取り違え。特に医学用語(例: 上波 → 上葉、開業 → 改行)
+- ひらがな・カタカナのまま残った医学用語を正しい表記にする(例: ぞうえい → 造影、はいや → 肺野)。用語集にある語はその表記にする
 - 助詞の誤りと、長音の脱落(例: 右肺が結節 → 右肺に結節、脳こそく → 脳梗塞(長音の脱落))。話者の意図が明らかなものだけ
 - 句読点の補いと、数値・単位の表記(例: 5ミリ → 5mm、にじゅう → 20)
 - 言い直しや「えー」などの不要な音の除去
@@ -230,7 +237,7 @@ pub const DEFAULT_GUIDANCE: &str = "\
 - 内容の追加・削除・言い換え、否定の反転、語順の入れ替え
 - 左右(右・左)を変えること
 - 文体の変更や要約。話者が言った通りの内容を保つ
-- 数値と単位は話した通りに残す。単位が明らかに聞き違いのときだけ直す
+- 数値は話した通り(5 を 50 にしない)。単位の書き方は「表記」に従い、単位そのものは明らかな聞き違いのときだけ直す
 - 判断がつかない語は原文のまま残す
 
 # 分野
@@ -240,6 +247,7 @@ pub const DEFAULT_GUIDANCE: &str = "\
 読影レポートの文だけに当てはめる。一般の文章では数の書き方を変えない(「三種類」「一度」はそのまま)。
 - 長さの単位は mm・cm
 - 数は算用数字
+- 寸法の「かける」は ×(例: 5.5かける4.5 → 5.5×4.5)、「パーセント」は %
 - 略語は大文字: CT・MRI・T2WI・DWI
 
 # よく使う語
@@ -261,15 +269,10 @@ pub const DEFAULT_GUIDANCE: &str = "\
 - 白質病変
 ";
 
-/// 直し方の指示の節。空(ファイルが無い・空)なら既定の指示。上限を超えた分は切る。
+/// 直し方の指示の節。`<!-- -->` の注釈は送らない。空(ファイルが無い・空・注釈だけ)なら既定の指示。
+/// 上限を超えた分は切る。
 fn guidance_section(guidance: &str) -> String {
-    let guidance = guidance.trim();
-    let guidance = if guidance.is_empty() {
-        DEFAULT_GUIDANCE
-    } else {
-        guidance
-    };
-    let kept: String = guidance.chars().take(MAX_GUIDANCE_CHARS).collect();
+    let kept = super::guidance::prepare(guidance, DEFAULT_GUIDANCE, MAX_GUIDANCE_CHARS);
     format!("\n{GUIDANCE_HEADER}\n{kept}\n")
 }
 
@@ -401,6 +404,7 @@ pub fn request_body(
     claude_api::messages_body(
         model,
         MAX_TOKENS,
+        EFFORT,
         system,
         examples,
         build_user_message(request),
@@ -534,15 +538,44 @@ mod tests {
         assert_eq!(build_system_prompt(&glossary(), "", &blank), plain);
     }
 
-    /// 指示が無ければ既定の指示(雛形と同じ文)を使う。空白だけも無いのと同じ。
+    /// 指示が無ければ既定の指示(雛形と同じ文)を使う。空白だけ・注釈だけも無いのと同じ。
+    /// 既定の先頭の説明は注釈なので送らない。
     #[test]
     fn empty_guidance_uses_the_default_rules() {
         let plain = build_system_prompt(&glossary(), "", &[]);
         assert_eq!(build_system_prompt(&glossary(), " \n\t\n", &[]), plain);
+        assert_eq!(build_system_prompt(&glossary(), "<!-- メモだけ -->\n", &[]), plain);
         assert!(plain.contains(GUIDANCE_HEADER));
         assert!(plain.contains("してはいけないこと"));
         assert!(plain.contains("左右(右・左)を変えること"));
-        assert!(plain.contains(DEFAULT_GUIDANCE.trim()));
+        assert!(DEFAULT_GUIDANCE.starts_with("<!--\nここに書いたことは"));
+        assert!(plain.contains(&format!("{GUIDANCE_HEADER}\n# 直してよいもの\n")), "{plain}");
+        assert!(!plain.contains("ここに書いたことは") && !plain.contains("<!--") && !plain.contains("-->"));
+    }
+
+    /// 既定の指示の直し(2026-11-09): かなのまま残った医学用語、数値と単位の書き分け、「かける」と「パーセント」。
+    #[test]
+    fn the_default_rules_cover_kana_terms_numbers_and_signs() {
+        let rules = crate::core::guidance::strip_comments(DEFAULT_GUIDANCE);
+        let after = |line: &str, next: &str| {
+            let at = rules.find(line).unwrap_or_else(|| panic!("{line}"));
+            rules[at + line.len()..].starts_with(&format!("\n{next}"))
+        };
+        assert!(after(
+            "- 同音・類似音の語の取り違え。特に医学用語(例: 上波 → 上葉、開業 → 改行)",
+            "- ひらがな・カタカナのまま残った医学用語を正しい表記にする(例: ぞうえい → 造影、はいや → 肺野)。用語集にある語はその表記にする"
+        ));
+        assert!(rules.contains("- 数値は話した通り(5 を 50 にしない)。単位の書き方は「表記」に従い、単位そのものは明らかな聞き違いのときだけ直す\n"));
+        assert!(!rules.contains("数値と単位は話した通りに残す"));
+        assert!(after("- 数は算用数字", "- 寸法の「かける」は ×(例: 5.5かける4.5 → 5.5×4.5)、「パーセント」は %"));
+    }
+
+    /// 利用者の指示の注釈も送らない(本文の途中のメモも)。
+    #[test]
+    fn comments_in_the_guidance_are_not_sent() {
+        let prompt = build_system_prompt(&glossary(), "<!-- 自分用のメモ -->\n単位は mm<!-- 理由 -->で書く", &[]);
+        assert!(prompt.contains("単位は mmで書く"));
+        assert!(!prompt.contains("メモ") && !prompt.contains("理由"));
     }
 
     /// 字数で数えるので、日本語の途中で切れても壊れない。

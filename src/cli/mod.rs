@@ -3,7 +3,10 @@
 use openspeech::app::VoiceApp;
 use openspeech::core::audio;
 use openspeech::core::caps_lock;
-use openspeech::core::assistant::AssistantRequest;
+use openspeech::core::assistant::{
+    self, AssistantRequest, EditCheck, ReplyKind, Target, MAX_REQUEST_GUIDANCE_CHARS, MAX_TARGET_CHARS,
+};
+use openspeech::core::guidance;
 use openspeech::core::corrector::CorrectionRequest;
 use openspeech::core::judge::changed_ranges;
 use openspeech::core::mic_access;
@@ -69,8 +72,8 @@ pub(crate) const MODES: &[Mode] = &[
         flags: &["--correct-check", "--context", "--backend"],
     },
     Mode {
-        usage: "  --complete-check 依頼 [--previous 文] [--backend api|claude-code]   「ヘイ、クロード」のテンプレート補完を試す",
-        flags: &["--complete-check", "--previous", "--backend"],
+        usage: "  --complete-check 依頼 [--previous 文] [--target 文|--target-file 場所 [--whole-text]] [--backend api|claude-code]\n                                                                   「ヘイ、クロード」の依頼(テンプレートの補完・文章の手直し)を試す",
+        flags: &["--complete-check", "--previous", "--target", "--target-file", "--whole-text", "--backend"],
     },
     Mode {
         usage: "  --caps-check 秒 [--set-on|--set-off]                Caps Lock と画面のロックの変化を見る",
@@ -108,13 +111,14 @@ mod tests {
 
     /// 引数の名前は運用の手順に残っているので、集合を変えない(計画書 §6)。1.0 より前の版の 37 個から、照合の経路を
     /// 外したとき(P5)に `--gemini-check`・`--together`・`--model`・`--heard`・`--checking` の 5 個を外した。
-    const FLAGS: [&str; 32] = [
+    /// 1.1.0 の後(post-release §7)に、手直しの依頼を試す `--target`・`--target-file`・`--whole-text` を足した。
+    const FLAGS: [&str; 35] = [
         "--add-to-dock", "--backend", "--caps-check", "--complete-check", "--context",
         "--correct-check", "--device", "--help", "--install-app", "--iphone",
         "--latency-check", "--list-devices", "--method", "--mic-check", "--vad-threshold",
         "--trace", "--no-vad", "--open", "--out", "--previous", "--ratio", "--recognize-check", "--save",
         "--say", "--screenshot", "--segment-check", "--set-off", "--set-on", "--start-ms",
-        "--transfer-check", "--version", "--wait",
+        "--target", "--target-file", "--transfer-check", "--version", "--wait", "--whole-text",
     ];
 
     #[test]

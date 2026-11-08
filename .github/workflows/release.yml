@@ -102,6 +102,10 @@ jobs:
           - 認識モデルは含まれません。アプリの「モデルを取得」で取得します。
           - 認識も AI 訂正も間違えることがあります。使う前に必ず確認してください。医療機器ではありません。
           NOTES
+          # その版で変わったことがあれば添える(release-notes/<版>.md)
+          if [ -f "release-notes/$VERSION.md" ]; then
+            { echo; cat "release-notes/$VERSION.md"; } >> "$RUNNER_TEMP/notes.md"
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$dist/openspeech-macos-arm64.tar.gz" \
             "$dist/openspeech-macos-arm64.tar.gz.sha256" \

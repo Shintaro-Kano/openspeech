@@ -22,7 +22,11 @@ if [ ! -f "$binary" ]; then
 fi
 # Read the file itself (not `strings | grep -q`: with pipefail, grep stopping at the first hit makes
 # strings die of SIGPIPE and the test would pass). -a also covers the link-edit segment.
-leaks=(-e /Users/ -e "$HOME" -e "$root" -e shintaro -e /private/var/folders/ -e /private/tmp/)
+# The account name is matched as one word (a shorter part of it would also match the public template
+# library's GitHub URLs, which belong in the binary). On a CI runner the name is an ordinary word, so
+# it is checked only on a personal Mac, like check-public.sh does.
+leaks=(-e /Users/ -e "$HOME" -e "$root" -e /private/var/folders/ -e /private/tmp/)
+[ -n "${CI:-}" ] || leaks+=(-e "$(id -un)")
 if LC_ALL=C grep -a -i -F -q "${leaks[@]}" "$binary"; then
   echo "build-release: the binary still contains a local path or name:" >&2
   LC_ALL=C grep -a -i -F -o "${leaks[@]}" "$binary" | sort | uniq -c >&2 || true

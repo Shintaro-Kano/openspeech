@@ -48,6 +48,9 @@ pub struct Utterance {
     pub correction: CorrectionState,
     /// 文末の命令語を働かせた発話か。音にはその語が入っているので、外部 API の文の文末に語が残る。
     pub spoken_command: bool,
+    /// 「ヘイクロード」の手直しで置き換えた文(と、Esc で戻した文)。範囲の全体(全文のこともある)なので、
+    /// Esc で消す単位にしない(`take_back`)。
+    pub from_edit: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -190,6 +193,7 @@ impl EditorModel {
             fixed: false,
             correction: CorrectionState::Settled,
             spoken_command: false,
+            from_edit: false,
         });
         let position = start + added;
         self.selection = (position, position);
@@ -228,6 +232,54 @@ impl EditorModel {
             return;
         };
         self.exclude_from_learning(start, start + body.chars().count());
+    }
+
+    /// 範囲を 1 つの発話の文に置き換える(「ヘイクロード」の手直しの答え)。テンプレートと同じく学習の対象にしない
+    /// (`fixed`)。範囲の中に収まっていた発話は消え、範囲にかかる発話(前側も後ろ側も)も学習から外す。
+    /// ほかの発話と色分けの位置はずらす。新しい発話は話した順の最後で、手直しの印(`from_edit`)を付ける。
+    /// カーソルは置き換えた文の末尾(選択は畳む。選んだままだと、次に打った 1 字で整えた文が置き換わる)。
+    /// 戻り値は新しい発話の番号。
+    pub fn replace_range_fixed(&mut self, start: usize, end: usize, text: &str) -> u64 {
+        let end = end.min(self.len());
+        let start = start.min(end);
+        // かかる発話は、位置をずらす前の範囲で見る(ずらしたあとでは、後ろ側にかかる発話が範囲から外れる)。
+        self.exclude_from_learning(start, end);
+        self.utterances.retain(|u| !(start <= u.start && u.end <= end));
+        self.replace(start, end, text);
+        let added = text.chars().count();
+        let id = self.next_utterance_id;
+        self.next_utterance_id += 1;
+        if added > 0 {
+            self.utterances.push(Utterance {
+                id,
+                start,
+                end: start + added,
+                audio: None,
+                applied: Vec::new(),
+                machine: text.to_string(),
+                fixed: true,
+                correction: CorrectionState::Settled,
+                spoken_command: false,
+                from_edit: true,
+            });
+        }
+        self.selection = (start + added, start + added);
+        id
+    }
+
+    /// 範囲に「AI が直した語」の色を付ける。`ranges` は `start` からの字の位置。
+    pub fn mark_corrected(&mut self, start: usize, ranges: &[(usize, usize)]) {
+        let length = self.len();
+        for (from, to) in ranges {
+            let (from, to) = ((start + from).min(length), (start + to).min(length));
+            if from < to {
+                self.spans.push(Span {
+                    start: from,
+                    end: to,
+                    kind: SpanKind::Corrected,
+                });
+            }
+        }
     }
 
     /// 発話の AI 訂正の状態を変える。消えた発話なら何もしない。
@@ -412,6 +464,39 @@ mod tests {
         m.insert_recognized("あり", &[], None);
         assert_eq!(m.text, "結節あり");
         assert_eq!(m.cursor(), 4);
+    }
+
+    /// 範囲の置き換え: 中の発話は消え、かかる発話は学習から外れ、後ろの発話はずれる。新しい発話は fixed で最後。
+    #[test]
+    fn a_range_is_replaced_by_one_fixed_utterance() {
+        let mut m = model("右肺に");
+        m.insert_recognized("結節を", &[], None);
+        m.insert_recognized("認めまる。", &[], None);
+        m.insert_recognized("胸水なし。", &[], None);
+        let ids: Vec<u64> = m.utterances.iter().map(|u| u.id).collect();
+        // 「肺に結節を認めまる。」(1〜11 字目)を置き換える。先頭の発話は範囲にかかり、2・3 番目は中に収まる。
+        let id = m.replace_range_fixed(1, 11, "肺に結節を認めます。");
+        assert_eq!(m.text, "右肺に結節を認めます。胸水なし。");
+        assert_eq!(m.selection, (11, 11), "カーソルは置き換えた文の末尾(選ばない)");
+        let last = m.utterances.last().unwrap();
+        assert_eq!((last.id, last.start, last.end, last.fixed, last.from_edit), (id, 1, 11, true, true));
+        assert_eq!(m.intact_start(id), Some(1));
+        assert!(m.utterances.iter().all(|u| u.id != ids[1] && u.id != ids[2]), "中の発話は消える");
+        assert!(m.is_fixed(ids[0]), "かかる発話は学習から外す");
+        let after = m.utterances.iter().find(|u| u.id == ids[3]).unwrap();
+        assert_eq!((after.start, after.end, after.fixed), (11, 16, false), "後ろの発話はずれるだけ");
+        assert!(m.delete_last_utterance());
+        assert_eq!(m.text, "右胸水なし。", "最後の発話は新しい発話");
+
+        // 範囲の終わりが発話の途中にあると、後ろ側にかかる発話も学習から外す。
+        let mut m = model("結節を");
+        m.insert_recognized("認めまる。胸水なし。", &[], None);
+        let back = m.utterances[1].id;
+        m.replace_range_fixed(0, 8, "結節を認めます。");
+        assert_eq!(m.text, "結節を認めます。胸水なし。");
+        assert!(m.is_fixed(back), "後ろ側にかかる発話");
+        m.mark_corrected(0, &[(6, 7)]);
+        assert_eq!(m.spans.last().map(|s| (s.start, s.end, s.kind)), Some((6, 7, SpanKind::Corrected)));
     }
 
     #[test]

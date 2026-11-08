@@ -1,11 +1,13 @@
-//! 保存と、利用者が手で書き換えるファイル(guidance.md・dictionary.json)の見張り。
+//! 保存と、利用者が手で書き換えるファイル(guidance.md・request.md・dictionary.json)の見張り。
 
 use super::*;
 
-/// 利用者が手で書き換えるファイル(guidance.md・dictionary.json)の見張りの状態。
+/// 利用者が手で書き換えるファイル(guidance.md・request.md・dictionary.json)の見張りの状態。
 pub(super) struct FileWatch {
     /// 訂正役に渡した補足のファイルの更新時刻。無ければ None。
     pub(super) guidance_modified: Option<SystemTime>,
+    /// 補完役に渡した依頼の指示のファイルの更新時刻。無ければ None。
+    pub(super) request_guidance_modified: Option<SystemTime>,
     /// 辞書ファイルの更新時刻(開いた時点、または最後に読んだ・書いた時点)。
     pub(super) dictionary_modified: Option<SystemTime>,
     /// 最後にファイルへ書いた(または読んだ)辞書。変わったときだけ書くための控え。
@@ -76,7 +78,24 @@ impl VoiceApp {
         }
         self.files.checked_at = Some(now);
         self.watch_guidance();
+        self.watch_request_guidance();
         self.watch_dictionary();
+    }
+
+    /// 依頼の指示のファイルが変わっていたら、補完役を作り直す(見る周期は補足と同じ)。
+    pub(super) fn watch_request_guidance(&mut self) {
+        let modified = self.store.request_guidance_modified();
+        if modified == self.files.request_guidance_modified {
+            return;
+        }
+        self.files.request_guidance_modified = modified;
+        self.request_guidance_chars = request_guidance_length(&self.store);
+        diag::log(format!(
+            "依頼の指示の更新を検知({})",
+            self.request_guidance_chars
+                .map_or("読めない".to_string(), |chars| format!("{chars} 字"))
+        ));
+        self.rebuild_assistant();
     }
 
     pub(super) fn watch_guidance(&mut self) {

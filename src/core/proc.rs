@@ -209,7 +209,7 @@ fn run_with_input(
 /// Claude Code に、道具も設定も読まず、会話も残さず、1 回で形を固定した答えだけを返させる引数。
 /// システムプロンプトはファイルで渡す(引数に置くと同じ利用者の `ps` で見える)。
 /// 形を固定しないと説明文が混ざることがある。`--bare` はサブスクのログインを読まないので使えない。
-fn claude_code_arguments(model: &str, system_file: &Path, schema: &Value) -> Vec<String> {
+fn claude_code_arguments(model: &str, system_file: &Path, schema: &Value, effort: &str) -> Vec<String> {
     let system_file = system_file.to_string_lossy();
     let schema = schema.to_string();
     [
@@ -226,7 +226,7 @@ fn claude_code_arguments(model: &str, system_file: &Path, schema: &Value) -> Vec
         "--disable-slash-commands",
         "--no-session-persistence",
         "--effort",
-        "low",
+        effort,
         "--json-schema",
         &schema,
         "--output-format",
@@ -247,6 +247,12 @@ fn claude_code_command(binary: &Path, work_dir: &Path, arguments: &[String]) -> 
     command
 }
 
+/// `claude -p` に求める答え: 形(`--json-schema`)と考える量(`--effort`)。
+pub(crate) struct Answer<'a> {
+    pub(crate) schema: &'a Value,
+    pub(crate) effort: &'a str,
+}
+
 /// システムプロンプトをファイルに置いて `claude -p` を実行し、(標準出力, 標準エラー)を返す。
 /// ファイルは終わったら消す。
 pub(crate) fn run_claude_code(
@@ -254,12 +260,12 @@ pub(crate) fn run_claude_code(
     work_dir: &Path,
     model: &str,
     system: &str,
-    schema: &Value,
+    answer: Answer,
     message: &str,
     timeout: Duration,
 ) -> Result<(String, String), String> {
     let system_file = PrivateFile::create(PROMPT_PREFIX, system)?;
-    let arguments = claude_code_arguments(model, system_file.path(), schema);
+    let arguments = claude_code_arguments(model, system_file.path(), answer.schema, answer.effort);
     let command = claude_code_command(binary, work_dir, &arguments);
     run_with_input(command, message, timeout)
 }
@@ -313,7 +319,7 @@ pub(crate) fn fake_claude(dir: &Path, reply: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     let log = dir.join("claude.log");
     let script = format!(
-        "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    --system-prompt-file) echo \"SYSTEM:\"; cat \"$2\"; echo;;\n    --json-schema) echo \"SCHEMA: $2\";;\n  esac\n  shift\ndone >> '{}'\ncat > /dev/null\nprintf '%s' '{}'\n",
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    --system-prompt-file) echo \"SYSTEM:\"; cat \"$2\"; echo;;\n    --json-schema) echo \"SCHEMA: $2\";;\n    --effort) echo \"EFFORT: $2\";;\n  esac\n  shift\ndone >> '{}'\ncat > /dev/null\nprintf '%s' '{}'\n",
         log.display(),
         reply.replace('\'', "'\\''")
     );
@@ -358,7 +364,7 @@ mod tests {
     #[test]
     fn claude_code_is_asked_for_one_fixed_answer_with_nothing_loaded() {
         let schema = json!({"type": "object", "additionalProperties": false});
-        let arguments = claude_code_arguments("claude-haiku-5-5", Path::new("/tmp/p"), &schema);
+        let arguments = claude_code_arguments("claude-haiku-5-5", Path::new("/tmp/p"), &schema, "low");
         let after = |flag: &str| {
             let index = arguments.iter().position(|a| a == flag).unwrap();
             arguments[index + 1].clone()
@@ -370,6 +376,9 @@ mod tests {
         assert_eq!(after("--setting-sources"), "");
         assert_eq!(after("--output-format"), "json");
         assert_eq!(after("--effort"), "low");
+        let medium = claude_code_arguments("claude-opus-5-5", Path::new("/tmp/p"), &schema, "medium");
+        let at = medium.iter().position(|a| a == "--effort").unwrap();
+        assert_eq!(medium[at + 1], "medium");
         assert!(after("--json-schema").contains("additionalProperties"));
         assert!(arguments.iter().any(|a| a == "--no-session-persistence"));
         assert!(arguments.iter().any(|a| a == "--strict-mcp-config"));
@@ -445,7 +454,7 @@ mod tests {
             &dir,
             "claude-haiku-5-5",
             "規則と用語集",
-            &json!({}),
+            Answer { schema: &json!({}), effort: "low" },
             "",
             Duration::from_secs(5),
         )

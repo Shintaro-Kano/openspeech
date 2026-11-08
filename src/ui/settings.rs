@@ -5,6 +5,7 @@ use super::theme::{self, Palette, SliderSpec};
 use crate::app::{detector_problem, engine_problem, VoiceApp};
 use crate::core::audio;
 use crate::core::caps_lock;
+use crate::core::assistant;
 use crate::core::corrector;
 use crate::core::proc;
 use crate::core::mic_access;
@@ -13,7 +14,7 @@ use crate::core::record_key::{self, KeyCapture, Pressed};
 use crate::core::remote_asr;
 use crate::core::settings::{
     CorrectorBackend, GlobalSettings, RecognizerKind, RecordShortcut, ThemeChoice, TransferMethod,
-    UserSettings, HISTORY_COUNTS, MIC_GAIN_RANGE, POST_SILENCE_RANGE,
+    UserSettings, HISTORY_COUNTS, MIC_GAIN_RANGE, POST_SILENCE_RANGE, REQUEST_LISTEN_RANGE, REQUEST_LISTEN_STEP,
 };
 use crate::core::text_filter::{
     NumeralStyle, DATE_FORMATS, ENGLISH_STYLES, PUNCTUATION_KINDS, TIME_FORMATS, WIDTH_STYLES,
@@ -63,6 +64,15 @@ const REMOTE_TIMEOUT: SliderSpec = SliderSpec {
     min: 3.0,
     max: 60.0,
     step: 1.0,
+    decimals: 0,
+    suffix: " 秒",
+    low: "",
+    high: "",
+};
+const REQUEST_LISTEN: SliderSpec = SliderSpec {
+    min: *REQUEST_LISTEN_RANGE.start() as f64,
+    max: *REQUEST_LISTEN_RANGE.end() as f64,
+    step: REQUEST_LISTEN_STEP as f64,
     decimals: 0,
     suffix: " 秒",
     low: "",
@@ -150,6 +160,7 @@ enum Action {
     OpenDictMemory,
     RevealData,
     EditGuidance,
+    EditRequestGuidance,
     EditDictionary,
     FetchModels,
     CancelModels,
@@ -172,6 +183,7 @@ struct Info {
     corrector_name: Option<String>,
     assistant_name: Option<String>,
     guidance_chars: Option<usize>,
+    request_guidance_chars: Option<usize>,
     pairs: usize,
     utterances: u64,
     corrected: u64,
@@ -277,6 +289,7 @@ impl VoiceApp {
             corrector_name: self.corrector_name(),
             assistant_name: self.assistant_name(),
             guidance_chars: self.guidance_chars,
+            request_guidance_chars: self.request_guidance_chars,
             pairs: self.data.memory.pairs.len(),
             utterances: self.data.memory.utterances,
             corrected: self.data.memory.corrected,
@@ -348,7 +361,14 @@ impl VoiceApp {
                     .store
                     .ensure_guidance()
                     .and_then(|path| mic_access::open_in_text_editor(&path));
-                dialog.guidance_error = opened.err();
+                dialog.guidance_error = opened.err().map(|e| format!("guidance.md: {e}"));
+            }
+            Action::EditRequestGuidance => {
+                let opened = self
+                    .store
+                    .ensure_request_guidance()
+                    .and_then(|path| mic_access::open_in_text_editor(&path));
+                dialog.guidance_error = opened.err().map(|e| format!("request.md: {e}"));
             }
             Action::FetchModels => self.start_model_download(),
             Action::CancelModels => self.cancel_model_download(),
@@ -798,16 +818,32 @@ fn page_recognition(
 
 // ---- 3. AI 訂正 ----
 
-/// 指示の字数の表示。
-fn guidance_status(chars: usize) -> String {
+/// 指示の字数の表示(`<!-- -->` の注釈は数えない)。`limit` はその指示の上限。
+fn guidance_status(chars: usize, limit: usize) -> String {
     match chars {
         0 => "指示: アプリの既定".to_string(),
-        n if n > corrector::MAX_GUIDANCE_CHARS => format!(
-            "指示: {n} 字(先頭の {} 字だけ使います)",
-            corrector::MAX_GUIDANCE_CHARS
-        ),
+        n if n > limit => format!("指示: {n} 字(先頭の {limit} 字だけ使います)"),
         n => format!("指示: {n} 字"),
     }
+}
+
+/// 指示のファイルを開くボタンと、その右の字数(読めなければその旨)。
+fn guidance_row(ui: &mut Ui, p: &Palette, label: &str, chars: Option<usize>, limit: usize) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        clicked = ui.button(label).clicked();
+        match chars {
+            Some(chars) => theme::hint(ui, &guidance_status(chars, limit), p),
+            None => {
+                ui.label(
+                    RichText::new("指示を読めません(文字コードを UTF-8 にして保存してください)")
+                        .small()
+                        .color(p.danger),
+                );
+            }
+        }
+    });
+    clicked
 }
 
 fn page_corrector(
@@ -849,24 +885,21 @@ fn page_corrector(
         CorrectorBackend::ClaudeCode => corrector_claude_code(ui, d, p),
     }
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.button("AI への指示を編集…").clicked() {
-            actions.push(Action::EditGuidance);
-        }
-        match info.guidance_chars {
-            Some(chars) => theme::hint(ui, &guidance_status(chars), p),
-            None => {
-                ui.label(
-                    RichText::new("指示を読めません(文字コードを UTF-8 にして保存してください)")
-                        .small()
-                        .color(p.danger),
-                );
-            }
-        }
-    });
+    if guidance_row(ui, p, "訂正の指示を編集…", info.guidance_chars, corrector::MAX_GUIDANCE_CHARS) {
+        actions.push(Action::EditGuidance);
+    }
+    if guidance_row(
+        ui,
+        p,
+        "依頼の指示を編集…",
+        info.request_guidance_chars,
+        assistant::MAX_REQUEST_GUIDANCE_CHARS,
+    ) {
+        actions.push(Action::EditRequestGuidance);
+    }
     theme::hint(
         ui,
-        "直し方の規則もこのファイル(guidance.md)にあり、書き換えられます。空ならアプリの既定を使います",
+        "直し方の規則は guidance.md、「ヘイクロード」の依頼の規則は request.md にあり、書き換えられます。空ならアプリの既定を使います",
         p,
     );
     if let Some(error) = &d.guidance_error {
@@ -1165,11 +1198,6 @@ fn page_commands(
 ) {
     theme::hint(
         ui,
-        "「改行」「転送」と話すと動きます(漢字でもかなでも)。文の最後に続けても動きます(例:「結節を認めます 改行」)。続けて言うと回数分(「改行改行」で 2 行)",
-        p,
-    );
-    theme::hint(
-        ui,
         "別の言い方を足せます。認識結果に現れる表記で登録します(「、」で区切ると複数)。文の中に出てくる語(開業 など)は避けてください",
         p,
     );
@@ -1195,12 +1223,15 @@ fn page_commands(
     ui.label(RichText::new("Claude を呼ぶ言葉").strong());
     theme::hint(
         ui,
-        "「ヘイクロード、前立腺MRIのテンプレート。サイズは5.5かける4.5かける5.0」のように話すと、Claude が辞書ファイルのテンプレートから合うものを選び、言われた値を入れた文章をエディターに入れます。呼びかけだけなら、次の発話(15 秒以内)が依頼です",
+        &format!(
+            "「ヘイクロード、前立腺MRIのテンプレート。サイズは5.5かける4.5かける5.0」のように話すと、Claude が辞書ファイルのテンプレートから合うものを選び、言われた値を入れた文章をエディターに入れます。文章を選んで(選ばなければ全文)「意味が一貫するように整えて」のように頼むと、直した文で置き換えます(直後の Esc で戻せます)。呼びかけだけなら、15 秒以内に話し始めてください。話し始めてから {} 秒の間に言ったことをまとめて 1 つの依頼にします(途中で言葉が切れても続きを待ちます。「以上」と言えばすぐ送ります)",
+            d.user.request_listen().as_secs()
+        ),
         p,
     );
     theme::hint(
         ui,
-        "依頼の文とテンプレートの一覧が Claude に送られます(音声は送りません)。接続は「AI 訂正」の設定を使います。句読点や、かな・カタカナの違いは同じ語と見なします(「ヘイ、クロード」でも働きます)",
+        "依頼の文、エディターの文章(選んだ範囲か全文、先頭 3000 字)、テンプレートの一覧が Claude に送られます(音声は送りません)。接続は「AI 訂正」の設定を使います。句読点や、かな・カタカナの違いは同じ語と見なします(「ヘイ、クロード」でも働きます)",
         p,
     );
     ui.add(
@@ -1208,6 +1239,7 @@ fn page_commands(
             .desired_width(320.0)
             .hint_text("ヘイクロード、へいくろーど"),
     );
+    theme::slider_row(ui, "依頼を聞き取る時間", &mut d.user.request_listen_secs, &REQUEST_LISTEN, p);
     for note in call_notes(
         &split_keywords(&d.call_text),
         info.assistant_name.as_deref(),
@@ -1285,11 +1317,11 @@ fn command_notes(commands: &[CommandWords], symbol_readings: &[String]) -> Vec<S
         for word in &command.words {
             let key = template_key(word);
             let is_name_of = |action: CommandAction| action.names().iter().any(|n| template_key(n) == key);
-            if is_name_of(command.action) {
-                notes.push(format!("「{word}」は登録しなくても働きます"));
-            } else if let Some(other) = CommandAction::ALL
+            // 自分の操作の名前・読み(登録しなくても働く)は知らせない。そうでなく、別の操作の名前と同じなら知らせる。
+            if let Some(other) = CommandAction::ALL
                 .iter()
                 .find(|action| **action != command.action && is_name_of(**action))
+                .filter(|_| !is_name_of(command.action))
             {
                 notes.push(format!(
                     "「{word}」は「{}」の名前か読みです(そちらが先に働きます)",
@@ -1435,9 +1467,11 @@ mod tests {
 
     #[test]
     fn the_guidance_length_is_shown_with_the_limit_when_over_it() {
-        assert_eq!(guidance_status(0), "指示: アプリの既定");
-        assert_eq!(guidance_status(120), "指示: 120 字");
-        assert_eq!(guidance_status(corrector::MAX_GUIDANCE_CHARS), "指示: 4000 字");
-        assert_eq!(guidance_status(4001), "指示: 4001 字(先頭の 4000 字だけ使います)");
+        let limit = corrector::MAX_GUIDANCE_CHARS;
+        assert_eq!(guidance_status(0, limit), "指示: アプリの既定");
+        assert_eq!(guidance_status(120, limit), "指示: 120 字");
+        assert_eq!(guidance_status(limit, limit), "指示: 4000 字");
+        assert_eq!(guidance_status(4001, limit), "指示: 4001 字(先頭の 4000 字だけ使います)");
+        assert_eq!(assistant::MAX_REQUEST_GUIDANCE_CHARS, limit, "依頼の指示も同じ上限");
     }
 }

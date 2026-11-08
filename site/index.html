@@ -110,7 +110,7 @@
       <div class="grid">
         <div class="card"><h3>Mac の中で音声認識</h3><p>認識は Haas-ja v1.0 を使い、Mac の中(Metal)で実行します。音声は Mac の外に出ません(自分の鍵で外部の音声認識 API を選んだときを除く)。macOS 26 では、macOS 内蔵の音声認識を選ぶこともできます。</p></div>
         <div class="card"><h3>AI 訂正(任意)</h3><p>ご自身の Claude API キーか、この Mac の Claude Code を設定した場合だけ、認識の誤りを Claude が直します。送るのは文字だけで、音声は送りません。既定では使いません。</p></div>
-        <div class="card"><h3>学習・辞書・テンプレート</h3><p>直した語は学習して次回から置き換え、よく使う語は辞書に登録できます。「ヘイクロード」と話しかけると、登録したテンプレートの補完を依頼できます(補完も任意で、Claude API キーか、この Mac の Claude Code が必要です)。</p></div>
+        <div class="card"><h3>学習・辞書・テンプレート</h3><p>直した語は学習して次回から置き換え、よく使う語は辞書に登録できます。「ヘイクロード」と話しかけると、登録したテンプレートの補完や、文章の手直しを依頼できます(どちらも任意で、Claude API キーか、この Mac の Claude Code が必要です)。公開のテンプレートライブラリから取り込み、自分のテンプレートを共有することもできます(1.1.0)。</p></div>
         <div class="card"><h3>使っていたアプリへ入力</h3><p>確定した文章は、直前に前面にあったアプリへ入力します(macOS のアクセシビリティを使用。使えない場合は貼り付け)。録音キーは既定で Caps Lock で、設定で変えられます。iPhone をマイクにすることもできます。</p></div>
       </div>
     </div>
@@ -146,7 +146,7 @@
       <p class="lead">ソースコードはすべて公開しています。何が Mac の外に出るかは、次のとおりです。</p>
       <div class="grid">
         <div class="listbox"><h3>このアプリについて</h3><ul><li>オープンソース(MIT)。ソースは <a href="https://github.com/Shintaro-Kano/openspeech" target="_blank" rel="noopener">GitHub</a> にあります。</li><li>無料です。アカウント登録は要りません。</li><li>利用状況の送信(テレメトリ)はありません。アプリ内の更新確認もありません。</li><li>音声は Mac の外に出ません。例外は、自分の鍵で外部の音声認識 API(OpenAI・Deepgram・Gemini Flash)を選んだときで、声と判定した発話の音声をその API に送ります。</li></ul></div>
-        <div class="listbox"><h3>外に出る通信(すべて)</h3><ul><li>モデルの取得: 「モデルを取得」を押したときだけ、このサイトまたは Hugging Face からダウンロードします。</li><li>AI 訂正・テンプレートの補完: 有効にして設定した場合だけ、認識した文字(直前の最大 200 文字、登録語、学習した修正の例などを含む)を Claude(api.anthropic.com)に送ります。開発者向けの「この Mac の Claude Code」を選んだ場合は、Claude Code を通して Anthropic に送ります。音声は送りません。</li><li>外部の音声認識 API: 選んで鍵を入れた場合だけ、声と判定した発話の音声と辞書の単語を、選んだ API(api.openai.com・api.deepgram.com・generativelanguage.googleapis.com のどれか)に送ります。</li><li>インストール・更新: 手動で実行したときだけ、このサイトに接続します。</li><li>macOS 26 の内蔵音声認識を選んだ場合、macOS が言語データをダウンロードすることがあります。</li></ul></div>
+        <div class="listbox"><h3>外に出る通信(すべて)</h3><ul><li>モデルの取得: 「モデルを取得」を押したときだけ、このサイトまたは Hugging Face からダウンロードします。</li><li>AI 訂正・テンプレートの補完: 有効にして設定した場合だけ、認識した文字(直前の最大 200 文字、登録語、学習した修正の例などを含む)を Claude(api.anthropic.com)に送ります。開発者向けの「この Mac の Claude Code」を選んだ場合は、Claude Code を通して Anthropic に送ります。音声は送りません。</li><li>外部の音声認識 API: 選んで鍵を入れた場合だけ、声と判定した発話の音声と辞書の単語を、選んだ API(api.openai.com・api.deepgram.com・generativelanguage.googleapis.com のどれか)に送ります。</li><li>テンプレートの共有ライブラリ(1.1.0): 辞書の「共有ライブラリから取り込む」を押したときだけ、GitHub Pages(shintaro-kano.github.io)から公開テンプレートの目録を取得します。「共有」はお使いのブラウザで GitHub の投稿フォームを開くだけで、アプリ自身は何も送信しません。</li><li>インストール・更新: 手動で実行したときだけ、このサイトに接続します。</li><li>macOS 26 の内蔵音声認識を選んだ場合、macOS が言語データをダウンロードすることがあります。</li></ul></div>
       </div>
     </div>
   </section>

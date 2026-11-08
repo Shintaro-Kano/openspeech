@@ -130,6 +130,10 @@ impl Default for EngineSettings {
 pub const POST_SILENCE_RANGE: std::ops::RangeInclusive<u32> = 300..=1200;
 /// マイクの増幅の選べる範囲(倍)。
 pub const MIC_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=8.0;
+/// 依頼を聞き取る秒数の範囲。
+pub const REQUEST_LISTEN_RANGE: std::ops::RangeInclusive<u16> = 15..=60;
+/// 依頼を聞き取る秒数の刻み(範囲の両端はこの倍数)。
+pub const REQUEST_LISTEN_STEP: u16 = 5;
 
 /// 文章を入力先へ届ける方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -212,6 +216,9 @@ pub struct UserSettings {
     pub command_words: Vec<CommandWords>,
     /// Claude を呼ぶ言葉(テンプレート補完の入口)。既定は「ヘイクロード」の 2 表記(カタカナ・ひらがな)。空なら呼べない。
     pub call_words: Vec<String>,
+    /// 呼びかけだけのあと、話し始めてから依頼として聞き取る秒数(`REQUEST_LISTEN_RANGE`、既定 30)。
+    /// 読むときは `request_listen` で範囲と刻みに丸める。
+    pub request_listen_secs: u16,
     pub learning: LearningSettings,
     pub history_count: usize,
     pub save_history: bool,
@@ -229,11 +236,24 @@ impl Default for UserSettings {
             transfer: TransferSettings::default(),
             command_words: default_command_words(),
             call_words: super::assistant::default_call_words(),
+            request_listen_secs: 30,
             learning: LearningSettings::default(),
             history_count: 20,
             save_history: true,
             auto_backup: true,
         }
+    }
+}
+
+impl UserSettings {
+    /// 呼びかけだけのあと、話し始めてから依頼として聞き取る長さ。手で書いた値も範囲に入れ、最も近い 5 秒刻みに
+    /// 丸める(設定画面のつまみと同じ値。17 → 15、18 → 20)。
+    pub fn request_listen(&self) -> std::time::Duration {
+        let seconds = self
+            .request_listen_secs
+            .clamp(*REQUEST_LISTEN_RANGE.start(), *REQUEST_LISTEN_RANGE.end());
+        let seconds = (seconds + REQUEST_LISTEN_STEP / 2) / REQUEST_LISTEN_STEP * REQUEST_LISTEN_STEP;
+        std::time::Duration::from_secs(u64::from(seconds))
     }
 }
 

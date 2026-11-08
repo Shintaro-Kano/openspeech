@@ -7,7 +7,7 @@
 
 use crate::core::apple_speech::AppleSpeech;
 use crate::core::assistant::{
-    MAX_TEMPLATES, match_call, ApiAssistant, Assistant, AssistantReply, AssistantRequest, Call,
+    self, MAX_TEMPLATES, match_call, ApiAssistant, Assistant, AssistantReply, AssistantRequest, Call,
     ClaudeCodeAssistant,
 };
 use crate::core::audio::{self, Playback};
@@ -17,6 +17,7 @@ use crate::core::corrector::{
 };
 use crate::core::judge::{accept_correction, changed_ranges, changes_laterality, changes_meaning};
 use crate::core::diag;
+use crate::core::guidance;
 use crate::core::dictionary::{template_key, Dictionary, TEMPLATE_WORD};
 use crate::core::editor_model::{CorrectionState, EditorModel, Span, SpanKind};
 use crate::core::history::{self, History};
@@ -55,6 +56,8 @@ mod assistant_flow;
 mod caps;
 mod corrections;
 mod files;
+mod library_flow;
+pub use library_flow::{CopyFn, FetchFn, OpenFn, IMPORT_WHILE_EDITING};
 mod mic;
 mod transfer_flow;
 mod workers;
@@ -148,7 +151,7 @@ const ACCESSIBILITY_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const GUIDANCE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// 同時に進める訂正の数。
 const CORRECTION_WORKERS: usize = 3;
-/// 呼びかけだけを聞いたあと、依頼を待つ長さ(§3.2 の D5)。
+/// 呼びかけだけを聞いたあと、依頼の話し始めを待つ長さ(§3.2 の D5)。話し始めたら設定の秒数だけ聞き取る。
 const CALL_WAIT: Duration = Duration::from_secs(15);
 /// 発話ごとに AI 訂正の戻りを待つ上限。過ぎたら認識文のまま確定する(遅れて戻れば、手直しの前なら当てる)。
 /// 実測(Claude Code、2026-11-06): 6 秒を超えたのは Sonnet が単位 E の 58 回中 4 回(最長 12.7 秒)、
@@ -208,6 +211,8 @@ pub struct VoiceApp {
     corrections: CorrectionQueue,
     /// 「ヘイクロード」の補完役と依頼の状態(`assistant_flow.rs`)。
     requests: RequestState,
+    /// テンプレートの共有ライブラリの口と、取得中の目録(`library_flow.rs`)。
+    library: library_flow::LibraryState,
     /// 録音の切り替えキー(`caps.rs`)。
     keys: Keys,
     /// 取得中のモデル(設定の「認識」の「モデルを取得」)。取得中はマイクを開かない。落とすと取得も止まる。
@@ -223,6 +228,8 @@ pub struct VoiceApp {
     files: FileWatch,
     /// 補足の字数(設定画面の表示用)。読めないファイルなら None。
     pub guidance_chars: Option<usize>,
+    /// 依頼の指示(`request.md`)の字数(設定画面の表示用)。読めないファイルなら None。
+    pub request_guidance_chars: Option<usize>,
 }
 
 /// 外部の音声認識 API を用意する。選んでいない・知らない provider・鍵が無いときは None(Haas だけで動く)。
@@ -330,14 +337,26 @@ fn make_apple() -> Result<Box<dyn Recognizer>, String> {
     Ok(Box::new(AppleSpeech::new(helper)))
 }
 
-/// 補足の字数。前後の空白は訂正役に渡らないので数えない。読めなければ None。
+/// 補足の字数。`<!-- -->` の注釈と前後の空白は訂正役に渡らないので数えない。読めなければ None。
 /// 訂正役は学習のたびに作り直すので、切ったことの記録は、ファイルを読み直すここで 1 回だけ残す。
 fn guidance_length(store: &Store) -> Option<usize> {
-    let length = store.read_guidance().ok()?.trim().chars().count();
+    let length = guidance::sent_chars(&store.read_guidance().ok()?);
     if length > corrector::MAX_GUIDANCE_CHARS {
         diag::log(format!(
             "補足が長いので {} 字で切った(全 {length} 字)",
             corrector::MAX_GUIDANCE_CHARS
+        ));
+    }
+    Some(length)
+}
+
+/// 依頼の指示(`request.md`)の字数。数え方は補足と同じ。読めなければ None。
+fn request_guidance_length(store: &Store) -> Option<usize> {
+    let length = guidance::sent_chars(&store.read_request_guidance().ok()?);
+    if length > assistant::MAX_REQUEST_GUIDANCE_CHARS {
+        diag::log(format!(
+            "依頼の指示が長いので {} 字で切った(全 {length} 字)",
+            assistant::MAX_REQUEST_GUIDANCE_CHARS
         ));
     }
     Some(length)
@@ -413,10 +432,11 @@ pub fn make_assistant(
     data: &UserData,
 ) -> Option<Arc<dyn Assistant>> {
     let model = &global.corrector.model;
+    let guidance = store.load_request_guidance();
     match global.corrector.backend {
         CorrectorBackend::ApiKey => {
             let key = store.load_api_key()?;
-            Some(Arc::new(ApiAssistant::new(model, &key, &data.dictionary)))
+            Some(Arc::new(ApiAssistant::new(model, &key, &data.dictionary, &guidance)))
         }
         CorrectorBackend::ClaudeCode => {
             let binary = proc::find_claude()?;
@@ -425,6 +445,7 @@ pub fn make_assistant(
                 &binary,
                 &store.root,
                 &data.dictionary,
+                &guidance,
             )))
         }
     }
@@ -497,6 +518,8 @@ impl VoiceApp {
         }
         let guidance_modified = store.guidance_modified();
         let guidance_chars = guidance_length(&store);
+        let request_guidance_modified = store.request_guidance_modified();
+        let request_guidance_chars = request_guidance_length(&store);
         let dictionary_modified = store.dictionary_modified();
         let saved_dictionary = data.dictionary.clone();
         diag::log(format!("辞書 {}", dictionary_summary(&data.dictionary)));
@@ -547,6 +570,7 @@ impl VoiceApp {
             transfers: TransferState::new(),
             corrections: CorrectionQueue::new(),
             requests: RequestState::new(),
+            library: library_flow::LibraryState::new(),
             keys: Keys::default(),
             download: None,
             download_error: None,
@@ -555,11 +579,13 @@ impl VoiceApp {
             remote,
             files: FileWatch {
                 guidance_modified,
+                request_guidance_modified,
                 dictionary_modified,
                 saved_dictionary,
                 checked_at: None,
             },
             guidance_chars,
+            request_guidance_chars,
         }
     }
 
@@ -732,6 +758,7 @@ impl VoiceApp {
         self.follow_caps_lock();
         self.scan_for_iphone(Instant::now());
         self.check_accessibility(false);
+        self.receive_library();
         while let Ok(done) = self.corrections.remote_rx.try_recv() {
             self.receive_remote(done);
         }
@@ -850,6 +877,8 @@ impl VoiceApp {
         if self.take_call(&mut recognition) {
             return;
         }
+        // 手直しを Esc で戻せるのは直後だけ。別の発話が入ったら控えを捨てる。
+        self.requests.last_edit = None;
         // 取りやめのあとは手で直している途中かもしれないので、カーソルの位置ではなく文末へ入れ、
         // 手で動かしていたカーソルは戻す。文末にあったなら、続きの発話のためにそのまま進める。
         let length = self.editor.len();

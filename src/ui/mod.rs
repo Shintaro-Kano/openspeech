@@ -5,6 +5,8 @@ mod dialogs;
 mod dict_tool;
 mod editor;
 mod header;
+pub mod library;
+mod rows;
 mod settings;
 pub mod theme;
 
@@ -15,6 +17,7 @@ use std::time::{Duration, Instant};
 
 pub use dialogs::AddWordForm;
 pub use dict_tool::{DictTab, DictTool};
+pub use library::LibraryWindow;
 pub use settings::SettingsDialog;
 
 /// 開いている補助ウィンドウ。
@@ -22,6 +25,8 @@ pub use settings::SettingsDialog;
 pub struct Windows {
     pub add_word: Option<AddWordForm>,
     pub dict: Option<DictTool>,
+    /// 「共有ライブラリから取り込む…」の窓。
+    pub library: Option<LibraryWindow>,
     pub settings: Option<SettingsDialog>,
     pub help: bool,
     pub mic_help: bool,
@@ -43,6 +48,7 @@ impl Windows {
     pub fn any_open(&self) -> bool {
         self.add_word.is_some()
             || self.dict.is_some()
+            || self.library.is_some()
             || self.settings.is_some()
             || self.help
             || self.mic_help
@@ -250,6 +256,7 @@ impl VoiceApp {
     fn draw_windows(&mut self, ctx: &Context) {
         self.draw_add_word(ctx);
         self.draw_dict_tool(ctx);
+        self.draw_template_library(ctx);
         self.draw_settings(ctx);
         self.draw_dialogs(ctx);
     }

@@ -182,12 +182,18 @@ impl VoiceApp {
     }
 
     /// Esc と「取り消し」。音声の転送を待っていれば取りやめ、次に呼びかけの待ちと送った依頼を取りやめ、
-    /// どれも無ければ直前の発話を消す。送っている途中は文を変えない(消す分と合わなくなる)。
+    /// 直後の手直しなら戻し、どれも無ければ直前の発話を消す。送っている途中は文を変えない(消す分と合わなくなる)。
+    /// 手直しで置き換えた文(戻した文も)は範囲の全体(全文のこともある)なので、Esc では消さない。
     pub fn take_back(&mut self) {
         if self.transfer_sending() {
             return;
         }
-        if self.cancel_voice_transfer("転送を取りやめました") || self.cancel_request() {
+        if self.cancel_voice_transfer("転送を取りやめました") || self.cancel_request() || self.undo_edit() {
+            return;
+        }
+        if self.last_is_from_edit() {
+            diag::log("Esc: 最後の発話が手直しの文なので消さない");
+            self.notify("手直しした文は Esc では消せません");
             return;
         }
         self.editor.delete_last_utterance();
@@ -238,7 +244,8 @@ impl VoiceApp {
 
     /// 未確定の発話が無くなったら、待っていた音声の転送を送る。先頭だけ送っている途中なら、終わるまで待つ。
     pub(super) fn finish_voice_transfer(&mut self) {
-        // 「転送」より先に頼んだ補完は、戻ってから一緒に送る(答えの上限は API 15 秒・Claude Code 25 秒)。
+        // 「転送」より先に頼んだ補完は、戻ってから一緒に送る(答えの上限は API 15 秒・Claude Code 25 秒。対象の文章を
+        // 添えるとその字数に応じて延び、3000 字で API 90 秒・Claude Code 100 秒)。
         if self.editor.awaiting_correction() || self.transfer_sending() || self.completing() {
             return;
         }

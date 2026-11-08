@@ -219,6 +219,11 @@ pub fn to_katakana(text: &str) -> String {
         .collect()
 }
 
+/// キーワードの並びを、画面の欄と同じ分け方(「、」「,」改行)で分け直し、空と重複を除く。
+pub fn normalize_keywords(keywords: &[String]) -> Vec<String> {
+    split_keywords(&keywords.join("、"))
+}
+
 /// 「、」などで区切られたキーワードを分ける。空と重複は除く。
 pub fn split_keywords(text: &str) -> Vec<String> {
     let mut keywords: Vec<String> = Vec::new();
@@ -397,6 +402,25 @@ pub fn parse_modules(text: &str) -> Result<Vec<Module>, String> {
     Ok(modules)
 }
 
+/// テンプレートの欄の検査: キーワードがある、「テンプレート」で終わらない、文章がある。
+fn check_template_fields(keywords: &[String], body: &str) -> Result<(), String> {
+    if keywords.iter().all(|k| template_key(k).is_empty()) {
+        return Err("キーワードを入力してください".to_string());
+    }
+    if let Some(keyword) = keywords
+        .iter()
+        .find(|k| TEMPLATE_SUFFIXES.iter().any(|suffix| template_key(k).ends_with(suffix)))
+    {
+        return Err(format!(
+            "「{keyword}」は「テンプレート」で終わっています。キーワードは検査名だけにし、話すときに「テンプレート」を続けます"
+        ));
+    }
+    if body.trim().is_empty() {
+        return Err("文章を入力してください".to_string());
+    }
+    Ok(())
+}
+
 /// `parse_modules` の逆。画面の欄と CSV に書く形。
 pub fn modules_text(modules: &[Module]) -> String {
     let mut text = String::new();
@@ -473,34 +497,17 @@ impl Dictionary {
     ) -> Result<usize, String> {
         let keywords = split_keywords(keywords);
         let body = body.replace("\r\n", "\n");
-        if keywords.iter().all(|k| template_key(k).is_empty()) {
-            return Err("キーワードを入力してください".to_string());
+        check_template_fields(&keywords, &body)?;
+        if let Some(keyword) = self.taken_keyword(&keywords, editing) {
+            return Err(format!("「{keyword}」はほかのテンプレートで使っています"));
         }
-        if let Some(keyword) = keywords
-            .iter()
-            .find(|k| TEMPLATE_SUFFIXES.iter().any(|suffix| template_key(k).ends_with(suffix)))
-        {
-            return Err(format!(
-                "「{keyword}」は「テンプレート」で終わっています。キーワードは検査名だけにし、話すときに「テンプレート」を続けます"
-            ));
-        }
-        if body.trim().is_empty() {
-            return Err("文章を入力してください".to_string());
-        }
-        for keyword in &keywords {
-            let key = template_key(keyword);
-            let taken = self.templates.iter().enumerate().any(|(index, template)| {
-                Some(index) != editing && template.keywords.iter().any(|k| template_key(k) == key)
-            });
-            if taken {
-                return Err(format!("「{keyword}」はほかのテンプレートで使っています"));
-            }
-        }
-        // 画面から直しても、所見モジュールと利用者がファイルに足した項目は残す。
-        let (modules, extra) = editing
+        // 画面から直しても、所見モジュールと利用者がファイルに足した項目は残す。ただし共有ライブラリの
+        // `meta`(題名・投稿者など)は外す: 直した時点でその人のテンプレートになり、共有の題名に古い物を使わない。
+        let (modules, mut extra) = editing
             .and_then(|index| self.templates.get(index))
             .map(|template| (template.modules.clone(), template.extra.clone()))
             .unwrap_or_default();
+        extra.remove("meta");
         let template = Template {
             keywords,
             body,
@@ -517,6 +524,53 @@ impl Dictionary {
                 Ok(self.templates.len() - 1)
             }
         }
+    }
+
+    /// テンプレートをそのまま(所見モジュールと `extra` ごと)足す。共有ライブラリからの取り込みに使う。
+    /// 画面の保存と同じ検査をする。キーワードがほかのテンプレートと重なるとき、`replace` なら重なる物を
+    /// 置き換え(最初の物の位置に入れ、ほかは消す)、でなければ Err。戻り値は入れた番号。
+    pub fn add_template(&mut self, mut template: Template, replace: bool) -> Result<usize, String> {
+        template.keywords = normalize_keywords(&template.keywords);
+        template.body = template.body.replace("\r\n", "\n");
+        check_template_fields(&template.keywords, &template.body)?;
+        let conflicts = self.conflicting_templates(&template.keywords, None);
+        let Some(&first) = conflicts.first() else {
+            self.templates.push(template);
+            return Ok(self.templates.len() - 1);
+        };
+        if !replace {
+            let keyword = self.taken_keyword(&template.keywords, None).cloned().unwrap_or_default();
+            return Err(format!("「{keyword}」はほかのテンプレートで使っています"));
+        }
+        for &index in conflicts.iter().skip(1).rev() {
+            self.templates.remove(index);
+        }
+        self.templates[first] = template;
+        Ok(first)
+    }
+
+    /// キーワードのどれかがほかのテンプレート(`except` の番号は除く)と重なるテンプレートの番号(小さい順)。
+    /// 比べ方は呼び出しと同じ(`template_key`)。
+    pub fn conflicting_templates(&self, keywords: &[String], except: Option<usize>) -> Vec<usize> {
+        let keys: Vec<String> = keywords.iter().map(|k| template_key(k)).filter(|k| !k.is_empty()).collect();
+        self.templates
+            .iter()
+            .enumerate()
+            .filter(|(index, template)| {
+                Some(*index) != except
+                    && template.keywords.iter().any(|k| keys.contains(&template_key(k)))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// ほかのテンプレート(`except` の番号は除く)で使っているキーワードの最初の 1 つ。
+    fn taken_keyword<'a>(&self, keywords: &'a [String], except: Option<usize>) -> Option<&'a String> {
+        keywords.iter().find(|keyword| {
+            !self
+                .conflicting_templates(std::slice::from_ref(*keyword), except)
+                .is_empty()
+        })
     }
 
     /// 所見モジュールの欄(`parse_modules` の書き方)と一緒に保存する。欄が読めなければ何も変えない。

@@ -19,13 +19,43 @@ pub const DATA_DIR_NAME: &str = "OpenSpeech";
 /// 利用者が手で編集できる辞書(単語・記号の読み・テンプレート)。
 pub const DICTIONARY_FILE: &str = "dictionary.json";
 pub const HOME_ENV: &str = "OPENSPEECH_HOME";
-/// AI への指示の雛形。「AI への指示を編集…」を初めて押したときに書く。中身は訂正役の既定の指示そのもの。
+/// AI への指示の雛形。「訂正の指示を編集…」を初めて押したときに書く。中身は訂正役の既定の指示そのもの。
 pub const GUIDANCE_TEMPLATE: &str = crate::core::corrector::DEFAULT_GUIDANCE;
 /// 2026-11-08 より前の雛形の前書き(規則はアプリが固定、と書いてあった 2 行)。
 const OLD_GUIDANCE_PREAMBLE: &str = "\
 ここに書いたことは、認識した文を直すときの手がかりとして AI に渡されます。
 規則(内容を変えない・左右を変えない・出力は直した文だけ)はアプリが固定していて、ここでは変えられません。
 ";
+/// 2026-11-08 から 1.1.0 までの雛形の前書き(素の 3 行。AI にそのまま送られていた)。
+const PLAIN_GUIDANCE_PREAMBLE: &str = "\
+ここに書いたことは、認識した文を直すときの指示として AI にそのまま渡されます。自由に書き換えられます。
+空にするとアプリの既定(初めに書かれていたこの内容)が使われます。
+アプリが決めているのは、直した文だけを返して説明を書かないという出力の形と、左右が変わった答えを使わない守りだけです。
+";
+
+/// 利用者が手で書き換える指示のファイル。無ければ空として読み、「…の指示を編集…」で初めて開くときに雛形を書く。
+#[derive(Debug, Clone, Copy)]
+pub struct InstructionFile {
+    /// データのフォルダの中のファイル名。
+    pub name: &'static str,
+    /// 初めて作るときに書く中身。
+    pub template: &'static str,
+    /// 知らせと診断ログに出す名前。
+    pub label: &'static str,
+}
+
+/// 訂正の指示(訂正役の直し方)。
+pub const GUIDANCE_FILE: InstructionFile = InstructionFile {
+    name: "guidance.md",
+    template: GUIDANCE_TEMPLATE,
+    label: "補足",
+};
+/// 依頼の指示(「ヘイクロード」の補完役の答え方)。
+pub const REQUEST_FILE: InstructionFile = InstructionFile {
+    name: "request.md",
+    template: crate::core::assistant::DEFAULT_REQUEST_GUIDANCE,
+    label: "依頼の指示",
+};
 
 /// データの置き場所。`OPENSPEECH_HOME` があればそこ(試験と画面の撮影)、無ければ
 /// `~/Library/Application Support/OpenSpeech`。
@@ -119,85 +149,164 @@ impl Store {
         write_key(&self.root, &path, key)
     }
 
-    fn guidance_path(&self) -> PathBuf {
-        self.root.join("guidance.md")
+    fn instruction_path(&self, file: InstructionFile) -> PathBuf {
+        self.root.join(file.name)
     }
 
-    /// 補足のファイルを読む。無ければ空。別の文字コードで保存されたものは読めない(Err)。
+    /// 指示のファイルを読む。無ければ空。別の文字コードで保存されたものは読めない(Err)。
     /// 先頭の BOM は見えない字として残さず、NUL は Claude Code の引数に渡せないので除く。
-    pub fn read_guidance(&self) -> std::io::Result<String> {
-        match std::fs::read_to_string(self.guidance_path()) {
+    pub fn read_instructions(&self, file: InstructionFile) -> std::io::Result<String> {
+        match std::fs::read_to_string(self.instruction_path(file)) {
             Ok(text) => Ok(text.trim_start_matches('\u{feff}').replace('\0', "")),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(String::new()),
             Err(error) => Err(error),
         }
     }
 
-    /// 利用者が書く AI への補足。読めなければ診断ログに残し、補足なしで続ける。
-    pub fn load_guidance(&self) -> String {
-        self.read_guidance().unwrap_or_else(|error| {
-            diag::log(format!("補足を読めません: {error}"));
+    /// 指示のファイルの中身。読めなければ診断ログに残し、空(アプリの既定)で続ける。
+    pub fn load_instructions(&self, file: InstructionFile) -> String {
+        self.read_instructions(file).unwrap_or_else(|error| {
+            diag::log(format!("{}を読めません: {error}", file.label));
             String::new()
         })
     }
 
-    /// 補足のファイルの場所を返す。無ければ雛形を書き、あれば触らない。
-    pub fn ensure_guidance(&self) -> Result<PathBuf, String> {
+    /// 指示のファイルの場所を返す。無ければ雛形を書き、あれば触らない。
+    pub fn ensure_instructions(&self, file: InstructionFile) -> Result<PathBuf, String> {
         std::fs::create_dir_all(&self.root).map_err(|e| format!("保存先を作れません: {e}"))?;
-        let path = self.guidance_path();
+        let path = self.instruction_path(file);
         let mut options = std::fs::OpenOptions::new();
         match options.write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                if let Err(error) = file.write_all(GUIDANCE_TEMPLATE.as_bytes()) {
+            Ok(mut file_handle) => {
+                if let Err(error) = file_handle.write_all(file.template.as_bytes()) {
                     // 途中のファイルを残すと、次に押したとき雛形が入らないまま開く。
                     let _ = std::fs::remove_file(&path);
-                    return Err(format!("補足のファイルを作れません: {error}"));
+                    return Err(format!("{}のファイルを作れません: {error}", file.label));
                 }
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(format!("補足のファイルを作れません: {error}")),
+            Err(error) => return Err(format!("{}のファイルを作れません: {error}", file.label)),
         }
         Ok(path)
     }
 
-    /// 規則をアプリの固定から指示のファイルへ移した(2026-11-08)ときの引き継ぎ。古い前書きで始まるファイルは、
-    /// 控えを `backup/` に取ってから、前書きと規則の節を今の雛形のものに差し替える(「# 分野」から後ろは利用者の文なので触らない)。
-    /// 1 回だけ起きる(差し替えたあとは古い前書きで始まらない)。何かをしたときは、その知らせを返す。
+    /// 指示のファイルの更新時刻。無ければ None。
+    pub fn instructions_modified(&self, file: InstructionFile) -> Option<SystemTime> {
+        std::fs::metadata(self.instruction_path(file))
+            .and_then(|meta| meta.modified())
+            .ok()
+    }
+
+    /// 訂正の指示(`guidance.md`)を読む。
+    pub fn read_guidance(&self) -> std::io::Result<String> {
+        self.read_instructions(GUIDANCE_FILE)
+    }
+
+    /// 利用者が書く AI への補足。読めなければ診断ログに残し、補足なしで続ける。
+    pub fn load_guidance(&self) -> String {
+        self.load_instructions(GUIDANCE_FILE)
+    }
+
+    /// 補足のファイルの場所を返す。無ければ雛形を書き、あれば触らない。
+    pub fn ensure_guidance(&self) -> Result<PathBuf, String> {
+        self.ensure_instructions(GUIDANCE_FILE)
+    }
+
+    /// 補足のファイルの更新時刻。無ければ None。
+    pub fn guidance_modified(&self) -> Option<SystemTime> {
+        self.instructions_modified(GUIDANCE_FILE)
+    }
+
+    /// 依頼の指示(`request.md`)を読む。
+    pub fn read_request_guidance(&self) -> std::io::Result<String> {
+        self.read_instructions(REQUEST_FILE)
+    }
+
+    /// 依頼の指示。読めなければ診断ログに残し、アプリの既定で続ける。
+    pub fn load_request_guidance(&self) -> String {
+        self.load_instructions(REQUEST_FILE)
+    }
+
+    /// 依頼の指示のファイルの場所を返す。無ければ雛形を書き、あれば触らない。
+    pub fn ensure_request_guidance(&self) -> Result<PathBuf, String> {
+        self.ensure_instructions(REQUEST_FILE)
+    }
+
+    /// 依頼の指示のファイルの更新時刻。無ければ None。
+    pub fn request_guidance_modified(&self) -> Option<SystemTime> {
+        self.instructions_modified(REQUEST_FILE)
+    }
+
+    /// `guidance.md` の引き継ぎ。どちらも 1 回だけ起き(差し替えたあとは同じ前書きで始まらない)、同じ起動で続けて
+    /// 起きてよい。何かをしたときは、その知らせ(2 つなら改行でつなぐ)を返す。
+    /// 1. 規則をアプリの固定から指示のファイルへ移した(2026-11-08)とき: 古い前書きで始まるファイルは、前書きと
+    ///    規則の節を今の雛形のものに差し替える(「# 分野」から後ろは利用者の文なので触らない)。
+    /// 2. 前書きを AI に送らない注釈にした(1.1.0 の後)とき: 素の 3 行の前書きで始まるファイルは、その 3 行を
+    ///    今の雛形の注釈に差し替える(規則の節は利用者の文なので触らない)。
+    ///
+    /// どちらも控えを `backup/guidance-<時刻>.md` に取ってから書く。
     pub fn migrate_guidance(&self) -> Option<String> {
+        let notices: Vec<String> = [self.migrate_old_preamble(), self.migrate_plain_preamble()]
+            .into_iter()
+            .flatten()
+            .collect();
+        (!notices.is_empty()).then(|| notices.join("\n"))
+    }
+
+    fn migrate_old_preamble(&self) -> Option<String> {
         let original = self.read_guidance().ok()?;
         // Windows 風の改行で保存されていても前書きと見比べられるようにする(書き戻しは LF)。
         let text = original.replace("\r\n", "\n");
         let rest = text.strip_prefix(OLD_GUIDANCE_PREAMBLE)?;
         let head = GUIDANCE_TEMPLATE.split("# 分野").next()?;
         let merged = format!("{head}{}", rest.trim_start_matches('\n'));
+        Some(self.rewrite_guidance(
+            &original,
+            &merged,
+            "AI への指示(guidance.md)に、これまでアプリが固定していた規則を書き込みました。書き換えられます。前の内容の控え: ",
+            "AI への指示(guidance.md)に規則を書き込めません: ",
+        ))
+    }
+
+    fn migrate_plain_preamble(&self) -> Option<String> {
+        let original = self.read_guidance().ok()?;
+        let text = original.replace("\r\n", "\n");
+        let rest = text.strip_prefix(PLAIN_GUIDANCE_PREAMBLE)?;
+        let merged = format!("{}{rest}", guidance_comment_preamble());
+        Some(self.rewrite_guidance(
+            &original,
+            &merged,
+            "AI への指示(guidance.md)の先頭の説明を、AI に送られない注釈に直しました。控え: ",
+            "AI への指示(guidance.md)の先頭の説明を直せません: ",
+        ))
+    }
+
+    /// 控えを取ってから `guidance.md` を書き換え、知らせ(`done` か `failed` に控えの場所か理由を続けた文)を返す。
+    fn rewrite_guidance(&self, original: &str, merged: &str, done: &str, failed: &str) -> String {
         let stamp = Local::now().format("%Y%m%d_%H%M%S");
         let folder = self.root.join("backup");
-        let copy = folder.join(format!("guidance-{stamp}.md"));
+        let mut copy = folder.join(format!("guidance-{stamp}.md"));
+        // 同じ起動で 2 つの引き継ぎが同じ秒に起きても、前の控えを上書きしない。
+        let mut serial = 2;
+        while copy.exists() {
+            copy = folder.join(format!("guidance-{stamp}-{serial}.md"));
+            serial += 1;
+        }
         let result = std::fs::create_dir_all(&folder)
-            .and_then(|()| std::fs::write(&copy, &original))
+            .and_then(|()| std::fs::write(&copy, original))
             .and_then(|()| {
-                std::fs::write(self.guidance_path(), merged).inspect_err(|_| {
+                std::fs::write(self.instruction_path(GUIDANCE_FILE), merged).inspect_err(|_| {
                     // 本体を書けなければ控えも要らない(起動のたびに控えが増えないように)。
                     let _ = std::fs::remove_file(&copy);
                 })
             });
         let notice = match result {
-            Ok(()) => format!(
-                "AI への指示(guidance.md)に、これまでアプリが固定していた規則を書き込みました。書き換えられます。前の内容の控え: {}",
-                copy.display()
-            ),
-            Err(error) => format!("AI への指示(guidance.md)に規則を書き込めません: {error}"),
+            Ok(()) => format!("{done}{}", copy.display()),
+            Err(error) => format!("{failed}{error}"),
         };
         // 利用者のファイルを書き換えたので、起動時の知らせにも出す。
         self.warn(notice.clone());
-        Some(notice)
-    }
-
-    /// 補足のファイルの更新時刻。無ければ None。
-    pub fn guidance_modified(&self) -> Option<SystemTime> {
-        std::fs::metadata(self.guidance_path())
-            .and_then(|meta| meta.modified())
-            .ok()
+        notice
     }
 
     /// 転送履歴の日別ファイルの置き場。
@@ -339,6 +448,13 @@ impl Store {
     }
 }
 
+/// 今の雛形の先頭の注釈(`<!--` の行から `-->` だけの行まで)。
+fn guidance_comment_preamble() -> &'static str {
+    const END: &str = "\n-->\n";
+    let end = GUIDANCE_TEMPLATE.find(END).map_or(0, |at| at + END.len());
+    &GUIDANCE_TEMPLATE[..end]
+}
+
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let folder = path.parent().ok_or("保存先が不正です")?;
     std::fs::create_dir_all(folder).map_err(|e| format!("保存先を作れません: {e}"))?;
@@ -468,8 +584,9 @@ mod tests {
         std::fs::write(&path, &old).unwrap();
         let notice = store.migrate_guidance().expect("書き込んだ知らせ");
         assert!(notice.contains("書き込みました"), "{notice}");
+        assert!(!notice.contains("注釈"), "今の雛形の前書きを書くので、2 段目は続けて起きない: {notice}");
         let text = store.load_guidance();
-        assert!(text.starts_with("ここに書いたことは、認識した文を直すときの指示として"));
+        assert!(text.starts_with("<!--\nここに書いたことは、認識した文を直すときの指示として"));
         assert!(text.contains("# してはいけないこと"));
         assert!(text.ends_with("# 分野\n自分の分野\n\n# 表記\n- 自分の決まり\n"), "{text}");
         assert!(!text.contains("ここでは変えられません"));
@@ -542,6 +659,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&store.root);
     }
 
+    /// 1.1.0 までの雛形の素の 3 行の前書きで始まるファイルは、1 回だけその 3 行を注釈に直し、控えを残す。
+    /// 規則の節(利用者の文)は触らない。
+    #[test]
+    fn the_plain_preamble_becomes_a_comment_once() {
+        let store = temp_store("guidance-comment");
+        std::fs::create_dir_all(&store.root).unwrap();
+        let path = store.root.join("guidance.md");
+        let old = format!("{PLAIN_GUIDANCE_PREAMBLE}\n# 直してよいもの\n- 自分の規則\n\n# 分野\n自分の分野\n");
+        std::fs::write(&path, &old).unwrap();
+        let notice = store.migrate_guidance().expect("直した知らせ");
+        assert!(notice.starts_with("AI への指示(guidance.md)の先頭の説明を、AI に送られない注釈に直しました。控え: "), "{notice}");
+        let text = store.load_guidance();
+        assert_eq!(text, format!("{}\n# 直してよいもの\n- 自分の規則\n\n# 分野\n自分の分野\n", guidance_comment_preamble()));
+        let sent = crate::core::guidance::strip_comments(&text);
+        assert_eq!(sent.trim(), "# 直してよいもの\n- 自分の規則\n\n# 分野\n自分の分野", "注釈は送らない");
+        let copies: Vec<_> = std::fs::read_dir(store.root.join("backup"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(std::fs::read_to_string(&copies[0]).unwrap(), old);
+        assert!(store.migrate_guidance().is_none(), "2 回目は触らない");
+        assert_eq!(store.load_guidance(), text);
+        assert_eq!(store.take_warnings().len(), 1, "起動時の知らせに 1 行");
+
+        // CRLF で保存されていても同じ(書き戻しは LF)。手で前書きを書き換えた物は触らない。
+        std::fs::write(&path, old.replace('\n', "\r\n")).unwrap();
+        assert!(store.migrate_guidance().is_some());
+        assert!(store.load_guidance().starts_with("<!--\n") && !store.load_guidance().contains('\r'));
+        std::fs::write(&path, "ここに書いたことは、自分のメモです。\n# 規則\n").unwrap();
+        assert!(store.migrate_guidance().is_none());
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// 依頼の指示(`request.md`)も同じ作り: 無ければ空、初めて開くときに雛形、あれば触らない。
+    #[test]
+    fn the_request_guidance_file_works_like_the_guidance_file() {
+        let store = temp_store("request-guidance");
+        assert_eq!(store.load_request_guidance(), "");
+        assert_eq!(store.request_guidance_modified(), None);
+        let path = store.ensure_request_guidance().unwrap();
+        assert_eq!(path, store.root.join("request.md"));
+        assert_eq!(store.load_request_guidance(), crate::core::assistant::DEFAULT_REQUEST_GUIDANCE);
+        assert!(store.request_guidance_modified().is_some());
+        assert_eq!(store.load_guidance(), "", "訂正の指示とは別のファイル");
+        std::fs::write(&path, "\u{feff}自分の\0指示").unwrap();
+        store.ensure_request_guidance().unwrap();
+        assert_eq!(store.load_request_guidance(), "自分の指示", "2 回目は触らない。BOM と NUL は除く");
+        let _ = std::fs::remove_dir_all(&store.root);
+    }
+
     #[test]
     fn the_template_carries_the_field_words_and_says_the_rules_are_fixed() {
         for word in crate::core::recognizer::FIELD_WORDS {
@@ -550,7 +718,9 @@ mod tests {
         for heading in ["# 分野", "# 表記", "# よく使う語"] {
             assert!(GUIDANCE_TEMPLATE.contains(heading), "{heading}");
         }
-        assert!(GUIDANCE_TEMPLATE.starts_with("ここに書いたことは"));
+        assert!(GUIDANCE_TEMPLATE.starts_with("<!--\nここに書いたことは"));
+        assert!(GUIDANCE_TEMPLATE.contains("この <!-- --> で囲んだ部分は AI に送られません。\n-->\n\n# 直してよいもの"));
+        assert_eq!(guidance_comment_preamble().lines().last(), Some("-->"));
         assert!(GUIDANCE_TEMPLATE.contains("# してはいけないこと"));
         assert!(!GUIDANCE_TEMPLATE.contains("ここでは変えられません"));
         // 読影の文に限らず「数は算用数字」と書くと、一般の文の「三種類」まで「3種類」に書き換わった(導入前の評価)。

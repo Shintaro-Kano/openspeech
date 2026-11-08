@@ -60,6 +60,14 @@ pub fn changes_laterality(before: &str, after: &str) -> bool {
     laterality_signature(before) != laterality_signature(after)
 }
 
+/// 直したあとで右か左の語が増えるか(右系・左系それぞれの出現数を比べる)。手直しの門に使う: 右→左の反転は
+/// 左が増えるので捕まえ、重複の削除や文の並べ替え(並びは変わるが数は増えない)は通す。訂正役は並びまで見る
+/// `changes_laterality` を使う(1 文の誤認識の直しで左右の並びが変わる理由は無い)。
+pub fn adds_laterality(before: &str, after: &str) -> bool {
+    let count = |text: &str, side: char| laterality_signature(text).iter().filter(|c| **c == side).count();
+    ['右', '左'].iter().any(|side| count(after, *side) > count(before, *side))
+}
+
 /// 否定を表す語。あるかないかが変わる直しは、誤認識ではなく内容の変更とみなす。
 const NEGATIONS: [&str; 5] = ["なし", "無し", "ない", "無い", "ません"];
 /// 入れ替わると所見の向きが変わる字の組(上葉と下葉、高信号と低信号、陽性と陰性など)。
@@ -217,6 +225,20 @@ fn runs_of(marked: &[bool]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 右系・左系の語が増えたときだけ真。反転は捕まえ、重複の削除と並べ替えは通す(並びを見る `changes_laterality` は捕まえる)。
+    #[test]
+    fn added_side_words_are_detected_but_removals_and_reorders_are_not() {
+        assert!(adds_laterality("右肺に結節。", "左肺に結節。"), "反転は左が増える");
+        assert!(adds_laterality("肺に結節。", "右肺に結節。"), "無かった左右を足す");
+        assert!(adds_laterality("みぎ肺", "右肺と左肺"));
+        let twice = "右肺に結節。右肺に結節。";
+        assert!(!adds_laterality(twice, "右肺に結節。"));
+        assert!(changes_laterality(twice, "右肺に結節。"), "訂正役の判定は並びの変化で断る");
+        assert!(!adds_laterality("右肺に結節。左腎に嚢胞。", "左腎に嚢胞。右肺に結節。"));
+        assert!(!adds_laterality("Rt lung", "Right lung"), "同じ右の書き換え");
+        assert!(!adds_laterality("右肺", "右肺"));
+    }
 
     #[test]
     fn meaning_changes_are_detected() {

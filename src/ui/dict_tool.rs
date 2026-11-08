@@ -1,6 +1,6 @@
 //! 辞書ツール: 単語・テンプレート・学習(誤認識 → 正しい語)の 3 つの一覧。
 
-use super::theme;
+use super::{rows, theme};
 use crate::app::VoiceApp;
 use crate::core::judge::changes_meaning;
 use crate::core::dictionary::{modules_text, Template};
@@ -68,7 +68,13 @@ fn preview(body: &str) -> String {
     text
 }
 
-/// 一覧の 1 行に収まる長さに切る(別名が多いキーワードで窓が画面より広がらないように)。
+/// テンプレートの一覧のキーワード列の幅。窓の最大幅 700 から文章とボタンの列を引いて収まる値。
+const TEMPLATE_KEYWORD_WIDTH: f32 = 170.0;
+/// 一覧の文を字数で切る上限。はみ出しを防ぐのは列の幅で切る `rows::text` の方で、これは極端に長い文の
+/// 描画を軽くするため(列に見えるのはこれより短い)。
+const KEYWORD_CHARS: usize = 80;
+
+/// 文を `limit` 字までに切り、切ったら「…」を付ける。
 fn clip(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
@@ -188,6 +194,17 @@ impl VoiceApp {
                             if ui.button("CSV に書き出す").clicked() {
                                 self.export_csv(&mut tool);
                                 ui.close_menu();
+                            }
+                            if tool.tab == DictTab::Templates {
+                                ui.separator();
+                                if ui
+                                    .button("共有ライブラリから取り込む…")
+                                    .on_hover_text("押したときだけ、GitHub にある共有ライブラリの目録を取得します")
+                                    .clicked()
+                                {
+                                    self.open_template_library();
+                                    ui.close_menu();
+                                }
                             }
                         });
                         ui.add(
@@ -434,60 +451,83 @@ impl VoiceApp {
         ui.add_space(4.0);
         let mut remove: Option<usize> = None;
         let mut edit: Option<usize> = None;
+        let mut share: Option<usize> = None;
+        // Grid は列の幅が中身で決まり、長いキーワードやモジュール名で窓が最大幅を超えて画面からはみ出す。
+        // 1 行ずつ、キーワード(固定幅)・文章(残りの幅)・ボタン(右寄せ)に分け、文は幅で切る。
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(ui.available_height() - 24.0)
             .show(ui, |ui| {
-                egui::Grid::new("dict_templates")
-                    .striped(true)
-                    .num_columns(3)
-                    .spacing([16.0, 6.0])
-                    .show(ui, |ui| {
-                        for h in ["キーワード", "文章", ""] {
-                            ui.label(RichText::new(h).small().color(p.dim));
-                        }
-                        ui.end_row();
-                        for (index, template) in self.data.dictionary.templates.iter().enumerate() {
-                            let keywords = template.keywords.join("、");
-                            let names: Vec<&str> =
-                                template.modules.iter().map(|m| m.name.as_str()).collect();
-                            let names = names.join("、");
-                            if !matches(&tool.filter, &[&keywords, &template.body, &names]) {
-                                continue;
+                ui.spacing_mut().item_spacing.y = 0.0;
+                rows::row(ui, false, |ui| {
+                    rows::column(ui, TEMPLATE_KEYWORD_WIDTH, |ui| {
+                        ui.label(RichText::new("キーワード").small().color(p.dim));
+                    });
+                    ui.add_space(rows::GAP);
+                    ui.label(RichText::new("文章").small().color(p.dim));
+                });
+                let mut shown = 0;
+                for (index, template) in self.data.dictionary.templates.iter().enumerate() {
+                    let keywords = template.keywords.join("、");
+                    let names: Vec<&str> = template.modules.iter().map(|m| m.name.as_str()).collect();
+                    let names = names.join("、");
+                    if !matches(&tool.filter, &[&keywords, &template.body, &names]) {
+                        continue;
+                    }
+                    // Grid の striped と同じく、見出しの次の行から 1 行おきに地を敷く。
+                    rows::row(ui, shown % 2 == 0, |ui| {
+                        rows::column(ui, TEMPLATE_KEYWORD_WIDTH, |ui| {
+                            rows::text(ui, RichText::new(clip(&keywords, KEYWORD_CHARS)).strong(), &keywords);
+                        });
+                        ui.add_space(rows::GAP);
+                        rows::from_right(ui, |ui| {
+                            // 右から置くので、見た目は左から 挿入・編集・共有…・×。
+                            if ui
+                                .small_button("×")
+                                .on_hover_text("このテンプレートを消す")
+                                .clicked()
+                            {
+                                remove = Some(index);
                             }
-                            ui.label(RichText::new(clip(&keywords, 24)).strong())
-                                .on_hover_text(&keywords);
-                            // 1 つのセルには 1 つの部品(縦に積むと列の幅が崩れる)。モジュール名は 2 行目に。
-                            let mut shown = preview(&template.body);
-                            if !names.is_empty() {
-                                shown.push_str(&format!("\nモジュール: {names}"));
+                            if ui
+                                .small_button("共有…")
+                                .on_hover_text("GitHub の投稿フォームに項目を入れてブラウザで開きます(アプリは送信しません)")
+                                .clicked()
+                            {
+                                share = Some(index);
                             }
-                            ui.label(RichText::new(shown).color(p.dim));
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .small_button("挿入")
-                                    .on_hover_text("カーソルの位置へ差し込む")
-                                    .clicked()
-                                {
-                                    pending.insert = Some(template.body.clone());
-                                }
-                                if ui.small_button("編集").clicked() {
-                                    edit = Some(index);
-                                }
-                                if ui
-                                    .small_button("×")
-                                    .on_hover_text("このテンプレートを消す")
-                                    .clicked()
-                                {
-                                    remove = Some(index);
+                            if ui.small_button("編集").clicked() {
+                                edit = Some(index);
+                            }
+                            if ui
+                                .small_button("挿入")
+                                .on_hover_text("カーソルの位置へ差し込む")
+                                .clicked()
+                            {
+                                pending.insert = Some(template.body.clone());
+                            }
+                            ui.add_space(rows::GAP);
+                            rows::rest(ui, |ui| {
+                                let first_line = template.body.lines().next().unwrap_or("");
+                                rows::text(ui, RichText::new(preview(&template.body)).color(p.dim), first_line);
+                                if !names.is_empty() {
+                                    let line = format!("モジュール: {names}");
+                                    rows::text(ui, RichText::new(clip(&line, KEYWORD_CHARS)).color(p.dim), &line);
                                 }
                             });
-                            ui.end_row();
-                        }
+                        });
                     });
+                    shown += 1;
+                }
             });
         if let Some(index) = edit {
             tool.begin_edit(index, &self.data.dictionary.templates[index]);
+        }
+        if let Some(index) = share {
+            tool.message = Some(match self.share_template(index) {
+                Ok(message) => (message, false),
+                Err(message) => (message, true),
+            });
         }
         if let Some(index) = remove {
             self.data.dictionary.templates.remove(index);
