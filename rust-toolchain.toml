@@ -1,0 +1,5 @@
+[toolchain]
+# Same version as the development Mac. Bump deliberately, together with Cargo.lock.
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

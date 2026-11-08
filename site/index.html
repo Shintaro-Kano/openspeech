@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>OpenSpeech｜Mac で動く日本語の音声入力(認識は Mac 内で実行)</title>
+<meta name="description" content="OpenSpeech は放射線科医向けの Mac 用・日本語音声入力アプリです。音声認識は Mac の中で動作します(外部の音声認識 API を選んだときだけ、その API に音声を送ります)。無料・オープンソース(MIT)、アカウント不要、テレメトリなし。">
+<link rel="canonical" href="https://openspeech.unitedradiology.jp/">
+<link rel="alternate" hreflang="ja" href="https://openspeech.unitedradiology.jp/">
+<link rel="alternate" hreflang="en" href="https://openspeech.unitedradiology.jp/en/">
+<link rel="alternate" hreflang="x-default" href="https://openspeech.unitedradiology.jp/">
+<meta name="theme-color" content="#05070b">
+<style>
+  :root{--bg:#05070b;--panel:#0b101a;--line:#1b2434;--text:#e9eef6;--muted:#a9b6ca;--accent:#7db6ff;--accent-deep:#2b6fd1;--glow:rgba(43,111,209,.25);--radius:16px}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth;overflow-x:clip;scroll-padding-top:80px}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;line-height:1.75;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  a{color:var(--accent);text-decoration:underline}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 24px}
+  .mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace}
+  header{position:sticky;top:0;z-index:50;background:rgba(5,7,11,.9);border-bottom:1px solid var(--line)}
+  .nav{display:flex;align-items:center;gap:20px;height:60px}
+  .brand{font-weight:700;font-size:18px;color:var(--text);text-decoration:none}
+  .nav-links{display:flex;gap:20px;font-size:14px;white-space:nowrap}
+  .nav-links a{color:var(--muted);text-decoration:none}
+  .nav-links a:hover{color:var(--text)}
+  .nav-right{margin-left:auto}
+  .lang-switch{font-size:13px;font-weight:700;border:1px solid var(--line);border-radius:999px;padding:6px 13px;text-decoration:none;color:var(--text)}
+  .btn{display:inline-block;padding:12px 28px;border-radius:999px;font-size:15px;font-weight:700;background:var(--accent-deep);color:#fff;text-decoration:none}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .hero{text-align:center;padding:80px 0 72px}
+  h1{font-size:clamp(30px,6vw,52px);font-weight:800;line-height:1.35}
+  .accent{color:var(--accent)}
+  .hero-sub{max-width:660px;margin:24px auto 0;color:var(--muted);font-size:clamp(15px,2vw,17px)}
+  .hero-cta{display:flex;gap:14px;justify-content:center;margin-top:34px;flex-wrap:wrap}
+  .hero-badges{margin-top:26px;color:var(--muted);font-size:13px}
+  .hero-badges span{white-space:nowrap}
+  section{padding:72px 0}
+  .kicker{font-size:12px;font-weight:700;letter-spacing:.2em;color:var(--accent);text-transform:uppercase;margin-bottom:12px}
+  h2{font-size:clamp(24px,4vw,34px);font-weight:800;line-height:1.4;margin-bottom:14px}
+  .lead{color:var(--muted);max-width:680px;margin-bottom:36px}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  .grid>*{min-width:0}
+  .card,.listbox{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px}
+  .card h3{font-size:18px;margin-bottom:10px}
+  .card p,.listbox li,.listbox p{color:var(--muted);font-size:14.5px}
+  .listbox h3{font-size:16px;margin-bottom:12px}
+  .listbox ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+  .listbox li{padding-left:18px;position:relative;overflow-wrap:anywhere}
+  .listbox li::before{content:"·";color:var(--accent);position:absolute;left:5px;font-weight:800}
+  .shot{margin:0 auto;max-width:960px}
+  .shot img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid var(--line);background:var(--panel)}
+  .shot figcaption{margin-top:12px;color:var(--muted);font-size:13px}
+  .codebox{position:relative;margin-top:14px;background:#060a12;border:1px solid var(--line);border-radius:12px;padding:16px 110px 16px 18px;font-size:14px;overflow-x:auto;white-space:nowrap}
+  .copy{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:var(--accent-deep);border:none;color:#fff;font-weight:700;font-size:13px;border-radius:8px;padding:8px 14px;cursor:pointer;font-family:inherit}
+  .note{background:rgba(43,111,209,.08);border:1px solid rgba(43,111,209,.3);border-radius:12px;padding:16px 18px;font-size:14px;color:var(--muted);margin-top:14px}
+  .note b{color:var(--text)}
+  .stack{display:flex;flex-direction:column;gap:18px}
+  .sub{margin-top:40px}
+  .sub h3{font-size:19px;margin-bottom:10px}
+  .sub p{color:var(--muted);font-size:14.5px}
+  .inlinecode{background:#060a12;border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:13px}
+  footer{border-top:1px solid var(--line);padding:40px 0 56px;color:var(--muted);font-size:13.5px}
+  footer p{margin-top:10px}
+  .footer-links{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px}
+  @media (max-width:820px){
+    .nav-links{display:none}
+    .grid{grid-template-columns:1fr}
+    section{padding:56px 0}
+    .hero{padding:56px 0 56px}
+    .codebox{padding-right:18px;padding-bottom:56px;white-space:pre}
+    .copy{top:auto;bottom:8px;transform:none}
+  }
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top">OpenSpeech</a>
+    <nav class="nav-links" aria-label="ページ内メニュー">
+      <a href="#features">特長</a>
+      <a href="#install">インストール</a>
+      <a href="#trust">安全性</a>
+      <a href="#updates">更新・削除</a>
+      <a href="https://github.com/Shintaro-Kano/openspeech" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+    <div class="nav-right"><a class="lang-switch" href="/en/" hreflang="en" lang="en">EN</a></div>
+  </div>
+</header>
+<main id="top">
+  <div class="hero wrap">
+    <h1>話した言葉を、<span class="accent">そのまま</span>使っているアプリへ</h1>
+    <p class="hero-sub">OpenSpeech は、Mac で日本語を音声入力するアプリです。音声認識は Mac の中で実行します。認識した文章は専用の編集欄で確認し、⌘Enter で、直前まで使っていたアプリに入力されます。</p>
+    <div class="hero-cta">
+      <a class="btn" href="#install">Mac にインストール</a>
+      <a class="btn ghost" href="https://github.com/Shintaro-Kano/openspeech" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <p class="hero-badges"><span>Apple Silicon</span> · <span>macOS 15 以降</span> · <span>無料</span> · <span>オープンソース(MIT)</span> · <span>アカウント不要</span> · <span>テレメトリなし</span></p>
+  </div>
+
+  <section id="features" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker">Features</div>
+      <h2>4 つの特長</h2>
+      <p class="lead">放射線科の日常業務での使用を想定して作っています。使う機能は、設定で選べます。</p>
+      <div class="grid">
+        <div class="card"><h3>Mac の中で音声認識</h3><p>認識は Haas-ja v1.0 を使い、Mac の中(Metal)で実行します。音声は Mac の外に出ません(自分の鍵で外部の音声認識 API を選んだときを除く)。macOS 26 では、macOS 内蔵の音声認識を選ぶこともできます。</p></div>
+        <div class="card"><h3>AI 訂正(任意)</h3><p>ご自身の Claude API キーか、この Mac の Claude Code を設定した場合だけ、認識の誤りを Claude が直します。送るのは文字だけで、音声は送りません。既定では使いません。</p></div>
+        <div class="card"><h3>学習・辞書・テンプレート</h3><p>直した語は学習して次回から置き換え、よく使う語は辞書に登録できます。「ヘイクロード」と話しかけると、登録したテンプレートの補完を依頼できます(補完も任意で、Claude API キーか、この Mac の Claude Code が必要です)。</p></div>
+        <div class="card"><h3>使っていたアプリへ入力</h3><p>確定した文章は、直前に前面にあったアプリへ入力します(macOS のアクセシビリティを使用。使えない場合は貼り付け)。録音キーは既定で Caps Lock で、設定で変えられます。iPhone をマイクにすることもできます。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshot" style="padding-top:0">
+    <div class="wrap">
+      <figure class="shot">
+        <img src="assets/screenshot-main.png" alt="OpenSpeech の編集画面。話した内容が日本語の文章として表示され、確認して ⌘Enter で入力できる" width="1920" height="1200" decoding="async">
+        <figcaption>OpenSpeech の画面(画像は後日差し替え)。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <div class="kicker">Install</div>
+      <h2>インストールは、コマンドをひとつ貼るだけ</h2>
+      <p class="lead">ターミナルを開き、次の 1 行を貼り付けて実行します。</p>
+      <div class="codebox mono">curl -fsSL https://openspeech.unitedradiology.jp/install.sh | bash<button class="copy" type="button" data-copy="curl -fsSL https://openspeech.unitedradiology.jp/install.sh | bash" aria-label="インストールのコマンドをコピー">コピー</button></div>
+      <div class="note"><b>Intel Mac では動きません。</b>インストーラは Apple Silicon 以外の Mac では、何も入れずに終了します。この方法でインストールすると、macOS の「開発元を確認できません」という確認は出ません。</div>
+      <div class="grid sub">
+        <div class="listbox"><h3>動作環境</h3><ul><li>Apple Silicon の Mac(Intel Mac は非対応)</li><li>macOS 15 以降</li><li>macOS 内蔵の音声認識を使う場合は macOS 26</li></ul></div>
+        <div class="listbox"><h3>初回の設定</h3><ul><li>アプリを開き、「モデルを取得」を押すと、認識に使うモデルをダウンロードします(約 656 MB と約 1.2 MB)。</li><li>システム設定 → プライバシーとセキュリティ → アクセシビリティで OpenSpeech を許可します。</li><li>マイクの許可は、初めて使うときに macOS が確認します。</li></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="trust" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker">Trust</div>
+      <h2>安全性と、外に出る情報</h2>
+      <p class="lead">ソースコードはすべて公開しています。何が Mac の外に出るかは、次のとおりです。</p>
+      <div class="grid">
+        <div class="listbox"><h3>このアプリについて</h3><ul><li>オープンソース(MIT)。ソースは <a href="https://github.com/Shintaro-Kano/openspeech" target="_blank" rel="noopener">GitHub</a> にあります。</li><li>無料です。アカウント登録は要りません。</li><li>利用状況の送信(テレメトリ)はありません。アプリ内の更新確認もありません。</li><li>音声は Mac の外に出ません。例外は、自分の鍵で外部の音声認識 API(OpenAI・Deepgram・Gemini Flash)を選んだときで、声と判定した発話の音声をその API に送ります。</li></ul></div>
+        <div class="listbox"><h3>外に出る通信(すべて)</h3><ul><li>モデルの取得: 「モデルを取得」を押したときだけ、このサイトまたは Hugging Face からダウンロードします。</li><li>AI 訂正・テンプレートの補完: 有効にして設定した場合だけ、認識した文字(直前の最大 200 文字、登録語、学習した修正の例などを含む)を Claude(api.anthropic.com)に送ります。開発者向けの「この Mac の Claude Code」を選んだ場合は、Claude Code を通して Anthropic に送ります。音声は送りません。</li><li>外部の音声認識 API: 選んで鍵を入れた場合だけ、声と判定した発話の音声と辞書の単語を、選んだ API(api.openai.com・api.deepgram.com・generativelanguage.googleapis.com のどれか)に送ります。</li><li>インストール・更新: 手動で実行したときだけ、このサイトに接続します。</li><li>macOS 26 の内蔵音声認識を選んだ場合、macOS が言語データをダウンロードすることがあります。</li></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="updates" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker">Updates</div>
+      <h2>更新と削除</h2>
+      <p class="lead">更新も、同じコマンドをもう一度実行するだけです。アプリは自動では更新されません。</p>
+      <div class="codebox mono">curl -fsSL https://openspeech.unitedradiology.jp/install.sh | bash<button class="copy" type="button" data-copy="curl -fsSL https://openspeech.unitedradiology.jp/install.sh | bash" aria-label="インストールのコマンドをコピー">コピー</button></div>
+      <div class="note"><b>更新のたびに、アクセシビリティの許可をやり直してください。</b>このアプリは Apple Developer Program を使わない簡易署名(ad-hoc)のため、入れ替えると許可が無効になります。インストーラが許可をリセットするので、システム設定 → プライバシーとセキュリティ → アクセシビリティで、もう一度許可してください。</div>
+      <div class="sub" id="uninstall">
+        <h3>アンインストール</h3>
+        <p>次のコマンドで、アプリだけを削除します。設定・辞書・モデルなどのデータ(約 0.7 GB)は、<span class="inlinecode mono">~/Library/Application Support/OpenSpeech/</span> に残ります。</p>
+        <div class="codebox mono">curl -fsSL https://openspeech.unitedradiology.jp/uninstall.sh | bash<button class="copy" type="button" data-copy="curl -fsSL https://openspeech.unitedradiology.jp/uninstall.sh | bash" aria-label="アンインストールのコマンドをコピー">コピー</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="notes" style="padding-top:0">
+    <div class="wrap">
+      <div class="kicker">Notes</div>
+      <h2>注意事項</h2>
+      <div class="stack">
+        <div class="listbox"><h3>医療機器ではありません</h3><p>OpenSpeech は医療機器ではなく、診断や治療のためのものではありません。音声認識も AI 訂正も誤ることがあります(たとえば、似た名前の検査)。認識した文章と訂正した文章は、使う前に必ずご自身で確認してください。</p></div>
+        <div class="listbox"><h3>モデルの出典</h3><p>Haas-ja v1.0(Third Intelligence、Apache-2.0)の sakasegawa 氏による非公式 GGUF 変換(Hugging Face で公開)を使っています。音声区間の検出には Silero VAD v6.2(MIT)を、実行には speech.cpp と ggml(MIT)を使っています。詳細は GitHub の <a href="https://github.com/Shintaro-Kano/openspeech/blob/main/THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES</a> をご覧ください。</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>
+  <div class="wrap">
+    <strong>OpenSpeech</strong>
+    <p>Mac 用の日本語音声入力アプリ。MIT License。</p>
+    <p>注: PyTorch 向けのツールキット openspeech-team/openspeech とは関係がありません。</p>
+    <div class="footer-links">
+      <a href="https://github.com/Shintaro-Kano/openspeech" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/Shintaro-Kano/openspeech/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+      <a href="/install.sh">install.sh</a>
+      <a href="/uninstall.sh">uninstall.sh</a>
+      <a href="/en/" hreflang="en" lang="en">English</a>
+    </div>
+    <p>&copy; 2026 Shintaro Kano. MIT License.</p>
+  </div>
+</footer>
+<script>
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('[data-copy]');
+    if(!b) return;
+    var text = b.getAttribute('data-copy');
+    function done(){ var t=b.textContent; b.textContent='コピーしました'; setTimeout(function(){b.textContent=t;},1600); }
+    function legacy(){
+      var ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); document.body.removeChild(ta); done();
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(legacy);
+    } else { legacy(); }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+//! 画面に依存しない中身。録音・切り出し・認識・訂正・転送・保存をここにまとめている。
+
+pub mod apple_speech;
+pub mod assistant;
+pub mod audio;
+pub mod caps_lock;
+pub mod claude_api;
+pub mod corrector;
+pub mod diag;
+pub mod dictionary;
+pub mod editor_model;
+pub mod history;
+pub mod iphone_link;
+pub mod judge;
+pub mod learning;
+pub mod mic_access;
+pub mod models;
+pub mod proc;
+pub mod recognizer;
+pub mod record_key;
+pub mod remote_asr;
+pub mod segmenter;
+pub mod session;
+pub mod settings;
+pub mod speechcpp;
+pub mod store;
+pub mod text_filter;
+pub mod textio;
+pub mod transfer;
+pub mod user_data;
+pub mod voice_command;

@@ -1,0 +1,11 @@
+# Build output
+/target/
+
+# Local data and build products (never committed: they hold real user data or binaries)
+/dist/
+/tools/openspeech-speech/openspeech-speech
+
+
+# Misc
+.DS_Store
+*.part

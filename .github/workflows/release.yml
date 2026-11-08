@@ -1,0 +1,112 @@
+name: Release
+
+# A tag vX.Y.Z builds the app on macOS 26 (arm64), packs it and publishes a GitHub release.
+# The models are not attached: the app downloads them itself.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish the macOS arm64 release
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Wording check
+        run: scripts/check-public.sh
+
+      - name: The tag equals the version in Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          echo "tag=$tag Cargo.toml=$version"
+          # Only plain X.Y.Z (no pre-release or build suffix).
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The tag must be vX.Y.Z: $tag"; exit 1
+          fi
+          if [ "${tag#v}" != "$version" ]; then
+            echo "::error::Tag ($tag) differs from Cargo.toml version ($version)"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: License check (Rust crates and the bundled library)
+        run: python3 -I scripts/check-licenses.py --check THIRD-PARTY-LICENSES.txt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the Apple speech helper
+        run: tools/openspeech-speech/build.sh
+
+      - name: Release build (no local paths in the binary)
+        run: scripts/build-release.sh
+
+      - name: Assemble the app bundle
+        run: target/release/openspeech --install-app "$RUNNER_TEMP/out"
+
+      - name: Check the bundle
+        run: |
+          app="$RUNNER_TEMP/out/OpenSpeech.app"
+          codesign -v "$app"
+          # codesign -v also passes a bundle without libraries, so check exactly what is inside.
+          test "$(ls "$app/Contents/Frameworks")" = "libspeech.4.dylib" || { ls -la "$app/Contents/Frameworks"; echo "Frameworks must hold libspeech.4.dylib only"; exit 1; }
+          test -x "$app/Contents/MacOS/openspeech-speech" || { echo "missing MacOS/openspeech-speech"; exit 1; }
+          for f in LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt speech-cpp-LICENSE.txt ggml-LICENSE.txt; do
+            test -s "$app/Contents/Resources/$f" || { echo "missing Resources/$f"; exit 1; }
+          done
+          plist="$app/Contents/Info.plist"
+          for key in CFBundleShortVersionString CFBundleVersion; do
+            test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")" = "$VERSION" || { echo "Info.plist $key differs from $VERSION"; exit 1; }
+          done
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" = "15.0" || { echo "LSMinimumSystemVersion is not 15.0"; exit 1; }
+          plutil -lint "$plist"
+
+      - name: Pack the release files
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          mkdir -p "$dist"
+          # The archive root is OpenSpeech.app; tar keeps permissions and the signature.
+          tar -czf "$dist/openspeech-macos-arm64.tar.gz" -C "$RUNNER_TEMP/out" OpenSpeech.app
+          # File name only in the line, so `shasum -a 256 -c` works next to the file.
+          (cd "$dist" && shasum -a 256 openspeech-macos-arm64.tar.gz > openspeech-macos-arm64.tar.gz.sha256)
+          printf '%s\n' "$VERSION" > "$dist/VERSION"
+          cp site/install.sh site/uninstall.sh "$dist/"
+          ls -la "$dist"
+          cat "$dist/openspeech-macos-arm64.tar.gz.sha256"
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          OpenSpeech $VERSION (Apple Silicon、macOS 15 以降)
+
+          - 音声認識はこの Mac の中で動きます。外部の音声認識 API を選んだときだけ、声と判定した発話の音声をその API に送ります。
+          - インストール: ターミナルで
+            curl -fsSL https://openspeech.unitedradiology.jp/install.sh | bash
+          - 更新後は、システム設定の「プライバシーとセキュリティ」→「アクセシビリティ」で OpenSpeech を許可し直してください。
+          - 認識モデルは含まれません。アプリの「モデルを取得」で取得します。
+          - 認識も AI 訂正も間違えることがあります。使う前に必ず確認してください。医療機器ではありません。
+          NOTES
+          gh release create "$GITHUB_REF_NAME" \
+            "$dist/openspeech-macos-arm64.tar.gz" \
+            "$dist/openspeech-macos-arm64.tar.gz.sha256" \
+            "$dist/VERSION" \
+            "$dist/install.sh" \
+            "$dist/uninstall.sh" \
+            --title "OpenSpeech $GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"

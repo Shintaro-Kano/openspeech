@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Voice detection model (1.2 MB). The tests that need the 0.66 GB recognition model are
+  # #[ignore = "モデルが要る"] and run only on a developer Mac (scripts/test-with-models.sh).
+  VAD_URL: https://huggingface.co/sakasegawa/silero-vad-GGUF/resolve/main/silero-vad-309K-v6.2-F32.gguf
+  VAD_SHA256: 2fc312514e5fc4fa4ffd02b25c76a4853fa4130e8fb9777d01502183b01238cb
+  VAD_FILE: silero-vad-309K-v6.2-F32.gguf
+
+jobs:
+  test:
+    name: Test, lint, bundle (macOS 26, arm64)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The model goes where the app downloads it (<data folder>/models/); the tests find it through
+      # OPENSPEECH_HOME.
+      - name: Fetch the voice detection model
+        run: |
+          home="$RUNNER_TEMP/home"
+          dir="$home/models/silero-vad"
+          mkdir -p "$dir"
+          /usr/bin/curl -q -fsSL --retry 3 -o "$dir/$VAD_FILE.part" "$VAD_URL"
+          echo "$VAD_SHA256  $dir/$VAD_FILE.part" | shasum -a 256 -c -
+          mv "$dir/$VAD_FILE.part" "$dir/$VAD_FILE"
+          echo "OPENSPEECH_HOME=$home" >> "$GITHUB_ENV"
+
+      - name: Wording check
+        run: scripts/check-public.sh
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Build the Apple speech helper
+        run: tools/openspeech-speech/build.sh
+
+      - name: Release build (no local paths in the binary)
+        run: scripts/build-release.sh
+
+      - name: Assemble the app bundle
+        run: |
+          out="$RUNNER_TEMP/bundle"
+          target/release/openspeech --install-app "$out"
+          app="$out/OpenSpeech.app"
+          codesign -v "$app"
+          # codesign -v also passes a bundle without libraries, so check exactly what is inside.
+          test "$(ls "$app/Contents/Frameworks")" = "libspeech.4.dylib" || { ls -la "$app/Contents/Frameworks"; echo "Frameworks must hold libspeech.4.dylib only"; exit 1; }
+          test -x "$app/Contents/MacOS/openspeech-speech" || { echo "missing MacOS/openspeech-speech"; exit 1; }
+          for f in LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-LICENSES.txt speech-cpp-LICENSE.txt ggml-LICENSE.txt; do
+            test -s "$app/Contents/Resources/$f" || { echo "missing Resources/$f"; exit 1; }
+          done
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          plist="$app/Contents/Info.plist"
+          for key in CFBundleShortVersionString CFBundleVersion; do
+            test "$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")" = "$version" || { echo "Info.plist $key differs from Cargo.toml"; exit 1; }
+          done
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" = "15.0" || { echo "LSMinimumSystemVersion is not 15.0"; exit 1; }
+          plutil -lint "$plist"
+          # tar keeps permissions and the signature; the macOS 15 job runs this very bundle.
+          tar -czf "$RUNNER_TEMP/OpenSpeech.app.tar.gz" -C "$out" OpenSpeech.app
+
+      - name: License check (Rust crates and the bundled library)
+        run: python3 -I scripts/check-licenses.py --check THIRD-PARTY-LICENSES.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}/OpenSpeech.app.tar.gz
+          retention-days: 3
+
+  macos-15:
+    name: The bundle runs on macOS 15
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: ${{ runner.temp }}
+
+      - name: Unpack the bundle built on macOS 26
+        run: tar -xzf "$RUNNER_TEMP/OpenSpeech.app.tar.gz" -C "$RUNNER_TEMP"
+
+      # The model goes where the app downloads it (<data folder>/models/).
+      - name: Fetch the voice detection model
+        run: |
+          dir="$RUNNER_TEMP/home/models/silero-vad"
+          mkdir -p "$dir"
+          /usr/bin/curl -q -fsSL --retry 3 -o "$dir/$VAD_FILE.part" "$VAD_URL"
+          echo "$VAD_SHA256  $dir/$VAD_FILE.part" | shasum -a 256 -c -
+          mv "$dir/$VAD_FILE.part" "$dir/$VAD_FILE"
+
+      # --version does not load the library; --segment-check runs the voice detector through the
+      # bundle's Contents/Frameworks/libspeech.4.dylib. It falls back to volume only when the
+      # detector cannot load, so check both that the detector was used and that the sample was cut.
+      - name: Segment the sample with the voice detector
+        run: |
+          export OPENSPEECH_HOME="$RUNNER_TEMP/home"
+          out="$("$RUNNER_TEMP/OpenSpeech.app/Contents/MacOS/openspeech" --segment-check tests/sample-ja.wav)"
+          echo "$out"
+          echo "$out" | grep -q '^声の判定: Silero' || { echo "the voice detector did not load"; exit 1; }
+          echo "$out" | grep -q '^切り出し 1 件' || { echo "the sample was not cut into one utterance"; exit 1; }
