@@ -4,6 +4,7 @@
 use super::diag;
 use super::dictionary::Dictionary;
 use super::settings::GlobalSettings;
+use super::structure::StructureFile;
 use super::user_data::UserData;
 use chrono::Local;
 use serde::de::DeserializeOwned;
@@ -18,6 +19,8 @@ pub const BACKUP_GENERATIONS: usize = 5;
 pub const DATA_DIR_NAME: &str = "OpenSpeech";
 /// 利用者が手で編集できる辞書(単語・記号の読み・テンプレート)。
 pub const DICTIONARY_FILE: &str = "dictionary.json";
+/// テンプレートの構造(機械が付け、辞書の窓の「構造」で直す。§16.5)。
+pub const STRUCTURE_FILE: &str = "structure.json";
 pub const HOME_ENV: &str = "OPENSPEECH_HOME";
 /// AI への指示の雛形。「訂正の指示を編集…」を初めて押したときに書く。中身は訂正役の既定の指示そのもの。
 pub const GUIDANCE_TEMPLATE: &str = crate::core::corrector::DEFAULT_GUIDANCE;
@@ -281,21 +284,55 @@ impl Store {
         ))
     }
 
+    /// `request.md` の引き継ぎ(単位 S3、§16.6・D14)。1.1.0 の既定のまま(利用者が書き換えていない)なら、今の既定
+    /// (規則 6・7 を「全文で答えるとき」の意味に直し、程度の語・「〜のみ」・検査名が無いときの規則を足した物)に
+    /// 一度だけ書き換え、控えを `backup/request-<時刻>.md` に取る。書き換えていれば触らず、古い規則の文が残っていれば
+    /// 知らせる(答えの形は `REQUEST_FRAME` が先に立つので、そのままでも補完は働く)。何かしたら知らせを返す。
+    pub fn migrate_request_guidance(&self) -> Option<String> {
+        use crate::core::assistant::{is_previous_default, DEFAULT_REQUEST_GUIDANCE, REQUEST_GUIDANCE_1_1};
+        let original = self.read_request_guidance().ok()?;
+        if original.trim().is_empty() {
+            return None;
+        }
+        if is_previous_default(&original) {
+            return Some(self.rewrite_instructions(
+                REQUEST_FILE,
+                &original,
+                DEFAULT_REQUEST_GUIDANCE,
+                "依頼の指示(request.md)を新しい既定に書き換えました(構造のあるテンプレート・程度の語・「〜のみ」の規則)。前の内容の控え: ",
+                "依頼の指示(request.md)を新しい既定に書き換えられません: ",
+            ));
+        }
+        let old_rule = REQUEST_GUIDANCE_1_1.lines().find(|l| l.starts_with("7. text は補完した本文だけ"))?;
+        if original.replace("\r\n", "\n").lines().any(|l| l == old_rule) {
+            let notice = "依頼の指示(request.md)に S3 の前の規則「7. text は補完した本文だけ…」が残っています。既定に戻すには中身を空にしてください".to_string();
+            self.warn(notice.clone());
+            return Some(notice);
+        }
+        None
+    }
+
     /// 控えを取ってから `guidance.md` を書き換え、知らせ(`done` か `failed` に控えの場所か理由を続けた文)を返す。
     fn rewrite_guidance(&self, original: &str, merged: &str, done: &str, failed: &str) -> String {
+        self.rewrite_instructions(GUIDANCE_FILE, original, merged, done, failed)
+    }
+
+    /// 控え(`backup/<名前>-<時刻>.md`)を取ってから指示のファイルを書き換え、知らせを返す。
+    fn rewrite_instructions(&self, file: InstructionFile, original: &str, merged: &str, done: &str, failed: &str) -> String {
         let stamp = Local::now().format("%Y%m%d_%H%M%S");
         let folder = self.root.join("backup");
-        let mut copy = folder.join(format!("guidance-{stamp}.md"));
+        let stem = file.name.trim_end_matches(".md");
+        let mut copy = folder.join(format!("{stem}-{stamp}.md"));
         // 同じ起動で 2 つの引き継ぎが同じ秒に起きても、前の控えを上書きしない。
         let mut serial = 2;
         while copy.exists() {
-            copy = folder.join(format!("guidance-{stamp}-{serial}.md"));
+            copy = folder.join(format!("{stem}-{stamp}-{serial}.md"));
             serial += 1;
         }
         let result = std::fs::create_dir_all(&folder)
             .and_then(|()| std::fs::write(&copy, original))
             .and_then(|()| {
-                std::fs::write(self.instruction_path(GUIDANCE_FILE), merged).inspect_err(|_| {
+                std::fs::write(self.instruction_path(file), merged).inspect_err(|_| {
                     // 本体を書けなければ控えも要らない(起動のたびに控えが増えないように)。
                     let _ = std::fs::remove_file(&copy);
                 })
@@ -392,6 +429,21 @@ impl Store {
 
     pub fn save_dictionary(&self, dictionary: &Dictionary) -> Result<(), String> {
         write_json(&self.dictionary_path(), dictionary)
+    }
+
+    /// テンプレートの構造(派生、§16.5)。源泉のハッシュを鍵に持つ。消しても付け直せる。
+    pub fn structure_path(&self) -> PathBuf {
+        self.root.join(STRUCTURE_FILE)
+    }
+
+    /// 構造のファイルを読む。無ければ空。読めなければ日時付きの名前でよけて空(派生なので付け直せる)。
+    pub fn load_structure(&self) -> StructureFile {
+        self.read_or_default(&self.structure_path())
+    }
+
+    /// 構造のファイルを書く。`dictionary.json` は触らない。
+    pub fn save_structure(&self, file: &StructureFile) -> Result<(), String> {
+        write_json(&self.structure_path(), file)
     }
 
     /// 辞書ファイルの更新時刻。無ければ None。
@@ -555,6 +607,46 @@ mod tests {
         Store::at(&root)
     }
 
+    /// 構造のファイルは辞書と別に読み書きし、源泉のハッシュで引き、合うテンプレートの無い項は prune で消える。
+    /// 辞書ファイルは一字も変わらない。読めないファイルはよけて空から始める。
+    #[test]
+    fn the_structure_file_round_trips_beside_the_dictionary() {
+        use crate::core::dictionary::Template;
+        use crate::core::structure::TemplateStructure;
+        let store = temp_store("structure");
+        assert_eq!(store.load_structure(), StructureFile::default(), "無ければ空");
+        let template = |body: &str| Template {
+            keywords: vec!["試験CT".to_string()],
+            body: body.to_string(),
+            modules: Vec::new(),
+            extra: Default::default(),
+        };
+        let dictionary = Dictionary {
+            templates: vec![template("肝に異常なし。"), template("腎に異常なし。")],
+            ..Dictionary::default()
+        };
+        store.save_dictionary(&dictionary).unwrap();
+        let before = std::fs::read(store.dictionary_path()).unwrap();
+        let mut file = StructureFile::default();
+        for (i, t) in dictionary.templates.iter().enumerate() {
+            let structure = TemplateStructure { name: format!("{i}"), ..TemplateStructure::default() };
+            file.insert(t, structure);
+        }
+        file.insert(&template("消えた本文"), TemplateStructure::default());
+        assert_eq!(file.prune(&dictionary.templates), 1);
+        store.save_structure(&file).unwrap();
+        let read = store.load_structure();
+        assert_eq!(read, file);
+        assert_eq!(read.structure_for(&dictionary.templates[1]).unwrap().name, "1");
+        let text = std::fs::read_to_string(store.structure_path()).unwrap();
+        assert!(text.contains("\"_note\"") && text.contains("sha256:"));
+        assert_eq!(std::fs::read(store.dictionary_path()).unwrap(), before, "辞書ファイルは変わらない");
+        std::fs::write(store.structure_path(), "{壊れた").unwrap();
+        assert_eq!(store.load_structure(), StructureFile::default());
+        assert!(!store.structure_path().exists(), "読めないファイルはよける");
+        assert!(store.take_warnings().iter().any(|w| w.contains("structure.json")));
+    }
+
     #[test]
     fn the_template_is_written_only_when_the_file_is_missing() {
         let store = temp_store("guidance");
@@ -691,6 +783,36 @@ mod tests {
         std::fs::write(&path, "ここに書いたことは、自分のメモです。\n# 規則\n").unwrap();
         assert!(store.migrate_guidance().is_none());
         let _ = std::fs::remove_dir_all(&store.root);
+    }
+
+    /// 単位 S3: 1.1.0 の既定のままの `request.md` は一度だけ新しい既定に書き換え、控えを取る。書き換えた
+    /// ファイルは触らず、古い規則の文が残っていれば知らせる。無いか空なら何もしない。
+    #[test]
+    fn the_request_guidance_is_migrated_once_when_it_is_the_previous_default() {
+        use crate::core::assistant::{DEFAULT_REQUEST_GUIDANCE, REQUEST_GUIDANCE_1_1};
+        let store = temp_store("request-migrate");
+        assert!(store.migrate_request_guidance().is_none(), "無ければ何もしない");
+        std::fs::create_dir_all(&store.root).unwrap();
+        std::fs::write(store.root.join("request.md"), REQUEST_GUIDANCE_1_1.replace('\n', "\r\n")).unwrap();
+        let notice = store.migrate_request_guidance().expect("書き換えた知らせ");
+        assert!(notice.contains("新しい既定に書き換えました"), "{notice}");
+        assert_eq!(std::fs::read_to_string(store.root.join("request.md")).unwrap(), DEFAULT_REQUEST_GUIDANCE);
+        let backups: Vec<_> = std::fs::read_dir(store.root.join("backup"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("request-"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(store.migrate_request_guidance().is_none(), "2 回目は触らない");
+
+        // 書き換えたファイルで古い規則 7 が残っていれば、触らずに知らせる。
+        let own = REQUEST_GUIDANCE_1_1.replace("# 役割", "# 役割\n自分の一文。");
+        std::fs::write(store.root.join("request.md"), &own).unwrap();
+        let notice = store.migrate_request_guidance().expect("知らせ");
+        assert!(notice.contains("規則「7. text は補完した本文だけ"), "{notice}");
+        assert_eq!(std::fs::read_to_string(store.root.join("request.md")).unwrap(), own);
+        std::fs::write(store.root.join("request.md"), "自分で書いた規則だけ").unwrap();
+        assert!(store.migrate_request_guidance().is_none());
     }
 
     /// 依頼の指示(`request.md`)も同じ作り: 無ければ空、初めて開くときに雛形、あれば触らない。

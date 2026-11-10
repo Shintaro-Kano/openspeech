@@ -259,6 +259,12 @@ impl VoiceApp {
                 ui.add_space(6.0);
                 theme::section(ui, "iPhone", &p);
                 ui.label("近くの iPhone をマイクにできます。");
+                ui.label("止めるときは Mac の「マイクを切る」を使います。iPhone の画面は数秒で元に戻ります。");
+                ui.label("iPhone 側で「接続解除」を押すと、macOS がその iPhone を隠し、「マイクを入れる」を押しても、アプリを開き直しても見つからなくなります。戻すには Mac を一度スリープさせます。");
+                ui.label("1. 画面左上のアップルメニューの「スリープ」を選ぶか、蓋を閉じる。");
+                ui.label("2. 数秒待ってから、キーを押すか蓋を開けて Mac を戻す。");
+                ui.label("3. 「マイクを入れる」を押す。iPhone が見つかれば使えます。");
+                ui.label("戻らないときは、iPhone をケーブルで Mac につないでください。");
                 if ui.button("iPhone の接続方法").clicked() {
                     to_iphone = true;
                 }
@@ -358,6 +364,9 @@ impl VoiceApp {
             ui.checkbox(&mut prefer, "近くの iPhone をマイクとして使う");
             status_line(ui, &status.0, status.1, &p);
             ui.add_space(6.0);
+            // 説明が窓の高さを超えても、題と下のボタンが画面の外に出ないよう、説明だけを巻き取る。
+            let body_height = (ctx.screen_rect().height() - 190.0).max(160.0);
+            egui::ScrollArea::vertical().max_height(body_height).show(ui, |ui| {
             ui.label("Mac は iPhone を Bluetooth のマイク(ヘッドセット)としては受け付けません。");
             ui.label("代わりに Apple の「連係」が、Bluetooth で近くの iPhone を見つけ、Wi-Fi で音を受け取ります。");
             ui.label("次の条件がそろうと、録音デバイスに「〇〇のiPhoneのマイク」が現れます。");
@@ -371,6 +380,12 @@ impl VoiceApp {
             ui.label(
                 RichText::new("   手に持って画面を見ている間は一時停止します(Apple の案内)。置いたまま、Mac に向かって話してください。")
                     .small(),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("止めるときは Mac の「マイクを切る」を使ってください。iPhone の画面は数秒で元に戻ります。iPhone の「接続解除」を押すと macOS がその iPhone を隠し、アプリを開き直しても一覧に出ません。戻すには Mac を一度スリープさせて戻すか、ケーブルでつないでください(iPhone の「連係カメラ」をオフにしてからオンにしても戻ることがあります)。")
+                    .small()
+                    .strong(),
             );
             ui.add_space(4.0);
             ui.label(
@@ -389,6 +404,7 @@ impl VoiceApp {
                 RichText::new("Mac の「システム設定」→「サウンド」→「入力」に iPhone が出ていなければ、連係側の条件が満たされていません。")
                     .small(),
             );
+            });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("再検索").clicked() {

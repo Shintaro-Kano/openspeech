@@ -1,7 +1,7 @@
 //! 辞書ツール: 単語・テンプレート・学習(誤認識 → 正しい語)の 3 つの一覧。
 
 use super::{rows, theme};
-use crate::app::VoiceApp;
+use crate::app::{StructureState, VoiceApp};
 use crate::core::judge::changes_meaning;
 use crate::core::dictionary::{modules_text, Template};
 use egui::{Context, RichText};
@@ -30,6 +30,10 @@ pub struct DictTool {
     pub new_to: String,
     pub confirm_clear: bool,
     pub message: Option<(String, bool)>,
+    /// 編集の下の「構造」が開いているか(前のフレームの状態。欄の高さを決めるのに使う)。
+    pub structure_open: bool,
+    /// 「構造」を開く求め(`--open structure` の撮影)。次に描くときに開いて消す。
+    pub open_structure: bool,
 }
 
 impl DictTool {
@@ -104,6 +108,8 @@ fn save_csv(name: &str, text: &str) -> Result<bool, String> {
 const FIXED_BELOW_FIELDS: f32 = 150.0;
 /// 欄 2 つに充てる高さの最低限(窓を小さくしても欄が潰れないように)。
 const MIN_FIELDS_HEIGHT: f32 = 120.0;
+/// 「構造」の確認表を開いている間の欄 2 つの高さ(文は 1〜2 行だけ見せ、表に場所を譲る)。
+const CHECKING_FIELDS_HEIGHT: f32 = 64.0;
 
 /// 高さに上限のある複数行の欄。中身が上限を超えると欄の中で送り、窓を伸ばさない。
 fn bounded_multiline(
@@ -410,7 +416,12 @@ impl VoiceApp {
         );
         // 文章と所見モジュールは数十行になる。欄の高さに上限を置いて中で送り、
         // 保存ボタンと一覧を窓の中に残す(上限が無いと欄が伸びて窓が画面からはみ出し、保存できない)。
-        let fields = (ui.available_height() - FIXED_BELOW_FIELDS).max(MIN_FIELDS_HEIGHT);
+        // 「構造」を開いている間は、欄を最低限の高さにして確認表に場所を譲る。
+        let fields = if tool.editing.is_some() && tool.structure_open {
+            CHECKING_FIELDS_HEIGHT
+        } else {
+            (ui.available_height() - FIXED_BELOW_FIELDS).max(MIN_FIELDS_HEIGHT)
+        };
         bounded_multiline(
             ui,
             "dict_template_body",
@@ -448,78 +459,93 @@ impl VoiceApp {
         if submit {
             self.submit_template(tool, pending);
         }
+        if let Some(index) = tool.editing {
+            self.structure_fold(ui, tool, index, p);
+        }
         ui.add_space(4.0);
         let mut remove: Option<usize> = None;
         let mut edit: Option<usize> = None;
         let mut share: Option<usize> = None;
-        // Grid は列の幅が中身で決まり、長いキーワードやモジュール名で窓が最大幅を超えて画面からはみ出す。
-        // 1 行ずつ、キーワード(固定幅)・文章(残りの幅)・ボタン(右寄せ)に分け、文は幅で切る。
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .max_height(ui.available_height() - 24.0)
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                rows::row(ui, false, |ui| {
-                    rows::column(ui, TEMPLATE_KEYWORD_WIDTH, |ui| {
-                        ui.label(RichText::new("キーワード").small().color(p.dim));
-                    });
-                    ui.add_space(rows::GAP);
-                    ui.label(RichText::new("文章").small().color(p.dim));
-                });
-                let mut shown = 0;
-                for (index, template) in self.data.dictionary.templates.iter().enumerate() {
-                    let keywords = template.keywords.join("、");
-                    let names: Vec<&str> = template.modules.iter().map(|m| m.name.as_str()).collect();
-                    let names = names.join("、");
-                    if !matches(&tool.filter, &[&keywords, &template.body, &names]) {
-                        continue;
-                    }
-                    // Grid の striped と同じく、見出しの次の行から 1 行おきに地を敷く。
-                    rows::row(ui, shown % 2 == 0, |ui| {
+        // 「構造」の確認表を開いている間は、一覧を隠して表に場所を譲る(窓が画面からはみ出さないように)。
+        let checking = tool.editing.is_some() && tool.structure_open;
+        if checking {
+            theme::hint(ui, "テンプレートの一覧は「構造」を閉じると出ます", p);
+        } else {
+            // Grid は列の幅が中身で決まり、長いキーワードやモジュール名で窓が最大幅を超えて画面からはみ出す。
+            // 1 行ずつ、キーワード(固定幅)・文章(残りの幅)・ボタン(右寄せ)に分け、文は幅で切る。
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(ui.available_height() - 24.0)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    rows::row(ui, false, |ui| {
                         rows::column(ui, TEMPLATE_KEYWORD_WIDTH, |ui| {
-                            rows::text(ui, RichText::new(clip(&keywords, KEYWORD_CHARS)).strong(), &keywords);
+                            ui.label(RichText::new("キーワード").small().color(p.dim));
                         });
                         ui.add_space(rows::GAP);
-                        rows::from_right(ui, |ui| {
-                            // 右から置くので、見た目は左から 挿入・編集・共有…・×。
-                            if ui
-                                .small_button("×")
-                                .on_hover_text("このテンプレートを消す")
-                                .clicked()
-                            {
-                                remove = Some(index);
-                            }
-                            if ui
-                                .small_button("共有…")
-                                .on_hover_text("GitHub の投稿フォームに項目を入れてブラウザで開きます(アプリは送信しません)")
-                                .clicked()
-                            {
-                                share = Some(index);
-                            }
-                            if ui.small_button("編集").clicked() {
-                                edit = Some(index);
-                            }
-                            if ui
-                                .small_button("挿入")
-                                .on_hover_text("カーソルの位置へ差し込む")
-                                .clicked()
-                            {
-                                pending.insert = Some(template.body.clone());
-                            }
+                        ui.label(RichText::new("文章").small().color(p.dim));
+                    });
+                    let mut shown = 0;
+                    for (index, template) in self.data.dictionary.templates.iter().enumerate() {
+                        let keywords = template.keywords.join("、");
+                        let names: Vec<&str> = template.modules.iter().map(|m| m.name.as_str()).collect();
+                        let names = names.join("、");
+                        if !matches(&tool.filter, &[&keywords, &template.body, &names]) {
+                            continue;
+                        }
+                        // Grid の striped と同じく、見出しの次の行から 1 行おきに地を敷く。
+                        rows::row(ui, shown % 2 == 0, |ui| {
+                            rows::column(ui, TEMPLATE_KEYWORD_WIDTH, |ui| {
+                                rows::text(ui, RichText::new(clip(&keywords, KEYWORD_CHARS)).strong(), &keywords);
+                            });
                             ui.add_space(rows::GAP);
-                            rows::rest(ui, |ui| {
-                                let first_line = template.body.lines().next().unwrap_or("");
-                                rows::text(ui, RichText::new(preview(&template.body)).color(p.dim), first_line);
-                                if !names.is_empty() {
-                                    let line = format!("モジュール: {names}");
-                                    rows::text(ui, RichText::new(clip(&line, KEYWORD_CHARS)).color(p.dim), &line);
+                            rows::from_right(ui, |ui| {
+                                // 右から置くので、見た目は左から 挿入・編集・共有…・×。
+                                if ui
+                                    .small_button("×")
+                                    .on_hover_text("このテンプレートを消す")
+                                    .clicked()
+                                {
+                                    remove = Some(index);
                                 }
+                                if ui
+                                    .small_button("共有…")
+                                    .on_hover_text("GitHub の投稿フォームに項目を入れてブラウザで開きます(アプリは送信しません)")
+                                    .clicked()
+                                {
+                                    share = Some(index);
+                                }
+                                if ui.small_button("編集").clicked() {
+                                    edit = Some(index);
+                                }
+                                if ui
+                                    .small_button("挿入")
+                                    .on_hover_text("カーソルの位置へ差し込む")
+                                    .clicked()
+                                {
+                                    pending.insert = Some(template.body.clone());
+                                }
+                                ui.add_space(rows::GAP);
+                                rows::rest(ui, |ui| {
+                                    let first_line = template.body.lines().next().unwrap_or("");
+                                    rows::text(ui, RichText::new(preview(&template.body)).color(p.dim), first_line);
+                                    if !names.is_empty() {
+                                        let line = format!("モジュール: {names}");
+                                        rows::text(ui, RichText::new(clip(&line, KEYWORD_CHARS)).color(p.dim), &line);
+                                    }
+                                    if let StructureState::Annotated(structure) = self.structure_state(template) {
+                                        if !structure.unresolved.is_empty() {
+                                            let line = format!("構造の警告 {} 件(編集の下の「構造」で確かめる)", structure.unresolved.len());
+                                            rows::text(ui, RichText::new(line.as_str()).small().color(p.danger), &line);
+                                        }
+                                    }
+                                });
                             });
                         });
-                    });
-                    shown += 1;
-                }
-            });
+                        shown += 1;
+                    }
+                });
+        }
         if let Some(index) = edit {
             tool.begin_edit(index, &self.data.dictionary.templates[index]);
         }

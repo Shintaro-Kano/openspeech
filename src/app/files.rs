@@ -26,6 +26,7 @@ impl VoiceApp {
         // 辞書は手で編集するファイルなので、変わったときだけ書く(学習のたびに書き換えない)。
         if self.data.dictionary != self.files.saved_dictionary {
             self.write_dictionary();
+            self.after_dictionary_change();
         }
     }
 
@@ -139,6 +140,7 @@ impl VoiceApp {
                     }
                 }
                 self.refresh_engine_options();
+                self.after_dictionary_change();
             }
             Ok(None) => {
                 if let Err(message) = self.store.save_dictionary(&self.data.dictionary) {

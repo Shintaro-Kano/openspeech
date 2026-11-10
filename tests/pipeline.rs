@@ -2,7 +2,7 @@
 
 use openspeech::app::{recognize_options, MicState, VoiceApp};
 use openspeech::core::assistant::{Assistant, AssistantReply, AssistantRequest, ReplyKind, Target};
-use openspeech::core::audio::MicSource;
+use openspeech::core::audio::{MicError, MicErrorSink, MicSource};
 use openspeech::core::corrector::{CorrectionRequest, Corrector};
 use openspeech::core::dictionary::{Dictionary, Module, Template};
 use openspeech::core::editor_model::{CorrectionState, SpanKind};
@@ -18,7 +18,7 @@ use openspeech::core::transfer::{Delivery, TransferError};
 use openspeech::core::user_data::UserData;
 use openspeech::ui::library::{LibraryLoad, LibraryView};
 use openspeech::ui::{theme, DictTab, LibraryWindow};
-use openspeech::app::IMPORT_WHILE_EDITING;
+use openspeech::app::{IMPORT_WHILE_EDITING, IPHONE_LOST};
 use openspeech::core::voice_command::CommandAction;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -947,6 +947,8 @@ struct FakeState {
     close_delay: Duration,
     /// 開くのに失敗させる回数。
     failures: usize,
+    /// いま開いている録音のエラーの受け口。閉じても残す(cpal 0.15 の残った聞き役の代わり)。
+    errors: Option<MicErrorSink>,
 }
 
 /// 偽の録音デバイス。開かれた順を覚え、試験から音を流せる。
@@ -977,6 +979,7 @@ impl MicSource for FakeMic {
         &self,
         device: Option<String>,
         samples: Sender<Vec<f32>>,
+        errors: MicErrorSink,
     ) -> Result<Box<dyn Send>, String> {
         let delay = {
             let mut state = self.0.lock().unwrap();
@@ -993,6 +996,7 @@ impl MicSource for FakeMic {
         state.open_now += 1;
         state.open_peak = state.open_peak.max(state.open_now);
         state.sender = Some(samples);
+        state.errors = Some(errors);
         Ok(Box::new(FakeCapture(self.clone())))
     }
 }
@@ -1009,6 +1013,11 @@ impl FakeMic {
     fn push(&self, samples: Vec<f32>) {
         let state = self.0.lock().unwrap();
         state.sender.as_ref().unwrap().send(samples).unwrap();
+    }
+
+    /// 最後に開いた録音の受け口(閉じたあとに届く知らせを試す)。
+    fn errors(&self) -> MicErrorSink {
+        self.0.lock().unwrap().errors.clone().unwrap()
     }
 }
 
@@ -1250,6 +1259,106 @@ fn the_iphone_that_last_worked_is_preferred() {
     let opened = fake.clone();
     pump_until(&mut app, "iPhone が開く", move |_| opened.opened().len() == 1);
     assert_eq!(fake.opened()[0].as_deref(), Some(IPHONE));
+    app.stop_mic();
+}
+
+/// iPhone で録音中にデバイスが無くなったら(iPhone 側の接続解除か圏外)、Mac のマイクへ移らずにマイクを切って知らせる。
+/// そのあと 3 秒ごとの探し直しで iPhone が一覧から消えても、知らせを重ねない。
+#[test]
+fn an_iphone_that_goes_away_stops_the_mic_and_says_so() {
+    let (mut app, fake) = iphone_app("link-lost");
+    connect_iphone(&mut app, &fake);
+    (fake.errors())(MicError::Gone);
+    pump_until(&mut app, "マイクが切れる", |app| app.mic == MicState::Off);
+    assert_eq!(notice_of(&app), IPHONE_LOST);
+    assert!(app.notice.as_ref().unwrap().is_error);
+    assert_eq!(fake.opened().len(), 1, "Mac のマイクを開かない");
+
+    fake.0.lock().unwrap().names = vec![MAC.to_string()];
+    app.scan_for_iphone(Instant::now() + Duration::from_secs(10));
+    app.poll_events();
+    assert_eq!(notice_of(&app), IPHONE_LOST, "探し直しの知らせと二重に出さない");
+    assert_eq!(app.mic, MicState::Off);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(fake.opened().len(), 1);
+}
+
+/// 先に探し直しが iPhone の消えたことに気づいても、同じくマイクを切って同じ知らせを出す。遅れて届いた cpal の知らせは捨てる。
+#[test]
+fn the_scan_noticing_first_gives_the_same_notice_once() {
+    let (mut app, fake) = iphone_app("link-lost-late");
+    connect_iphone(&mut app, &fake);
+    let old = fake.errors();
+    fake.0.lock().unwrap().names = vec![MAC.to_string()];
+    app.scan_for_iphone(Instant::now() + Duration::from_secs(10));
+    assert_eq!(app.mic, MicState::Off);
+    assert_eq!(notice_of(&app), IPHONE_LOST);
+    app.notice = None;
+    old(MicError::Gone);
+    std::thread::sleep(Duration::from_millis(50));
+    app.poll_events();
+    assert_eq!(app.mic, MicState::Off);
+    assert!(app.notice.is_none(), "知らせを重ねない");
+    assert_eq!(fake.opened().len(), 1, "Mac のマイクを開かない");
+}
+
+/// 2 台目の iPhone が見えていれば、使っていた方が消えてもそちらへ切り替える。
+#[test]
+fn another_visible_iphone_takes_over_when_the_active_one_goes() {
+    let (mut app, fake) = iphone_app("link-lost-other");
+    connect_iphone(&mut app, &fake);
+    let other = "別のiPhoneのマイク";
+    fake.0.lock().unwrap().names = vec![MAC.to_string(), other.to_string()];
+    app.scan_for_iphone(Instant::now() + Duration::from_secs(10));
+    let opened = fake.clone();
+    pump_until(&mut app, "別の iPhone を開く", move |_| opened.opened().len() == 2);
+    assert_eq!(fake.opened()[1].as_deref(), Some(other));
+    assert!(notice_of(&app).contains("別の iPhone に切り替えました"));
+    app.stop_mic();
+}
+
+/// 止めた録音の聞き役から届いた知らせは捨てる(cpal 0.15 は閉じても聞き役が残り、後で iPhone が消えると知らせを出す)。
+#[test]
+fn a_lost_notice_from_a_stopped_capture_is_ignored() {
+    let (mut app, fake) = iphone_app("link-lost-stopped");
+    connect_iphone(&mut app, &fake);
+    let old = fake.errors();
+    app.stop_mic();
+    old(MicError::Gone);
+    std::thread::sleep(Duration::from_millis(50));
+    app.poll_events();
+    assert_eq!(app.mic, MicState::Off);
+    assert_ne!(notice_of(&app), IPHONE_LOST);
+
+    // 入れ直したあとに前の録音の知らせが届いても、いまの録音は止めない。
+    app.start_mic();
+    let opened = fake.clone();
+    pump_until(&mut app, "iPhone を開き直す", move |_| opened.opened().len() == 2);
+    fake.push(vec![0.1; 1600]);
+    pump_until(&mut app, "音が届く", |app| app.iphone_wait_seconds().is_none());
+    old(MicError::Gone);
+    std::thread::sleep(Duration::from_millis(50));
+    app.poll_events();
+    assert_eq!(app.mic, MicState::On);
+    assert!(app.using_iphone());
+    assert_ne!(notice_of(&app), IPHONE_LOST);
+    app.stop_mic();
+}
+
+/// iPhone でないデバイスが無くなっても、iPhone の知らせは出さない(記録だけ)。
+#[test]
+fn a_lost_mac_microphone_does_not_claim_the_iphone() {
+    let (mut app, fake) = iphone_app("mac-lost");
+    app.global.prefer_iphone = false;
+    app.global.input_device = Some(MAC.to_string());
+    app.start_mic();
+    let opened = fake.clone();
+    pump_until(&mut app, "開く", move |_| opened.opened().len() == 1);
+    pump_until(&mut app, "開いた知らせ", |app| app.session.is_recording());
+    (fake.errors())(MicError::Gone);
+    std::thread::sleep(Duration::from_millis(50));
+    app.poll_events();
+    assert_ne!(notice_of(&app), IPHONE_LOST);
     app.stop_mic();
 }
 
@@ -2538,6 +2647,7 @@ fn completed(template: &str, text: &str) -> Result<AssistantReply, String> {
         text: Some(text.to_string()),
         reply: None,
         replace: false,
+        selections: Vec::new(),
     })
 }
 
@@ -2601,6 +2711,79 @@ fn a_call_with_a_request_is_completed_from_a_template() {
     assert!(!app.completing());
     app.take_back();
     assert!(app.editor.is_empty(), "Esc で 1 発話として消える");
+}
+
+/// 単位 S3(§16.6): 構造のあるテンプレートは、Claude の選択をコードが描画して入れる。依頼には文脈を添え、
+/// 知らせに書く(文脈は本文に出ないので)。描画した本文は今までと同じく 1 発話のテンプレートとして入り、言い直しの
+/// 控えにもなる。
+#[test]
+fn a_structured_template_is_rendered_from_the_selections() {
+    use openspeech::core::structure::{Selection, TemplateStructure};
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let templates: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixtures.join("templates14.json")).unwrap()).unwrap();
+    let structures: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixtures.join("structure14.json")).unwrap()).unwrap();
+    let template: Template = serde_json::from_value(
+        templates["templates"].as_array().unwrap().iter().find(|t| t["keywords"][0] == "腹部骨盤CT").unwrap().clone(),
+    )
+    .unwrap();
+    let structure: TemplateStructure = serde_json::from_value(structures["structures"]["腹部骨盤CT"].clone()).unwrap();
+    let mut app = app("call-structured");
+    app.data.settings.save_history = false;
+    app.data.dictionary.templates.push(template.clone());
+    app.annotations.structures.insert(&template, structure);
+    let line = enable_fake_assistant(&mut app);
+    say(&mut app, "ヘイクロード、若い女性、腹部骨盤CTテンプレート、少量の腹水");
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 1);
+    let request = line.requests().remove(0);
+    assert_eq!(request.context, "女性・若年", "文脈はコードが取って依頼に添える");
+    line.answer(
+        &mut app,
+        Ok(AssistantReply {
+            kind: ReplyKind::Template,
+            template: Some("腹部骨盤CT".to_string()),
+            selections: vec![Selection::variant("若い女性", Some(3), "生理的な少量の腹水を認めます。")],
+            ..AssistantReply::default()
+        }),
+    );
+    let body: Vec<&str> = template.body.split('\n').collect();
+    let expected = [
+        "肝、胆、膵、脾、腎、副腎に明らかな異常を認めません。",
+        "子宮および両付属器は年齢相応の所見と考えます。",
+        body[5],
+        "生理的な少量の腹水を認めます。",
+        "撮像範囲の肺に特記すべき異常みられません。",
+        "胸水なし。",
+    ]
+    .join("\n");
+    assert_eq!(app.editor.text, expected);
+    let notice = notice_of(&app);
+    assert!(notice.starts_with("テンプレート「腹部骨盤CT」を補完しました"), "{notice}");
+    assert!(notice.contains("文脈: 女性・若年"), "{notice}");
+    let id = app.editor.utterances.last().unwrap().id;
+    assert!(app.editor.is_fixed(id), "学習の対象にしない");
+
+    // 検査名の無い依頼には候補を添える。CT と MRI が同点なら直前の補完のテンプレートを手がかりにし、知らせに
+    // ほかの候補(同点の物)を書く。
+    app.data.dictionary.templates.push(
+        serde_json::from_value(templates["templates"].as_array().unwrap().iter().find(|t| t["keywords"][0] == "腹部MRI").unwrap().clone())
+            .unwrap(),
+    );
+    say(&mut app, "ヘイクロード、肝嚢胞のみ");
+    pump_until(&mut app, "依頼が届く", |_| line.requests().len() == 2);
+    assert_eq!(line.requests()[1].candidates, "(テンプレートの補完なら)腹部骨盤CT(直前の補完から)");
+    line.answer(
+        &mut app,
+        Ok(AssistantReply {
+            kind: ReplyKind::Template,
+            template: Some("腹部骨盤CT".to_string()),
+            selections: vec![Selection::variant("肝", Some(1), "肝嚢胞を認めます。")],
+            ..AssistantReply::default()
+        }),
+    );
+    assert!(app.editor.text.contains("肝嚢胞を認めます。\n胆嚢内に"), "{}", app.editor.text);
+    assert!(notice_of(&app).contains("候補は腹部MRIもありました"), "{}", notice_of(&app));
 }
 
 /// 呼びかけだけなら次の発話が依頼になる。言い直しは直前の補完を置き換え、手を入れたあとは足す。
@@ -2683,6 +2866,7 @@ fn the_call_lapses_and_a_missing_template_only_notifies() {
             text: None,
             reply: Some("頭部MRIのテンプレートがありません".to_string()),
             replace: false,
+            selections: Vec::new(),
         }),
     );
     assert_eq!(app.editor.text, "右肺上葉に結節を認めます");
@@ -3807,6 +3991,7 @@ fn edited(text: &str, reply: Option<&str>) -> Result<AssistantReply, String> {
         text: Some(text.to_string()),
         reply: reply.map(str::to_string),
         replace: false,
+        selections: Vec::new(),
     })
 }
 

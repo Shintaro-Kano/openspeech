@@ -802,7 +802,7 @@ fn page_recognition(
             }
             ui.label(
                 RichText::new(
-                    "このアプリのサーバ(openspeech.unitedradiology.jp)から取り、取れなければ Hugging Face から取ります。\
+                    "Hugging Face(huggingface.co)から取ります。\
                      取ったファイルは大きさと SHA-256 を確かめてから使います。止まっても、次は続きから取ります。",
                 )
                 .small()

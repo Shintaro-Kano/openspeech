@@ -4,7 +4,7 @@
 //! 取得元の表は repo の `assets/models.json` を実行ファイルに埋め込んだもの(名前・取得元の URL の列・大きさ・
 //! SHA-256・ライセンス・出所)。取得は macOS の `/usr/bin/curl`(`~/.curlrc` は読まない `-q`)で `.part` に落とし、
 //! 途中で止まれば続きから取り直す。大きさと SHA-256 が表と合ったときだけ本来の名前に変える。
-//! 1 つ目の取得元(このアプリのサーバ)で取れなければ、次の取得元(Hugging Face)を試す。
+//! 取りに行く先は Hugging Face。表に 2 つ以上あれば、取れなかったときに次を試す。
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -436,8 +436,8 @@ mod tests {
         assert_eq!(ids, ["haas-ja", "silero-vad"]);
         for model in &models {
             assert_eq!(model.sha256.len(), 64, "{}", model.id);
-            assert!(model.urls.len() >= 2, "取りに行く先は 2 つ以上: {}", model.id);
-            assert!(model.urls[0].starts_with("https://openspeech.unitedradiology.jp/"));
+            assert!(!model.urls.is_empty(), "取りに行く先が無い: {}", model.id);
+            assert!(model.urls[0].starts_with("https://huggingface.co/"));
             assert!(model.urls.iter().all(|url| url.starts_with("https://")));
             assert!(!model.license.is_empty() && !model.source.is_empty());
         }

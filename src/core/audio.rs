@@ -3,12 +3,24 @@
 
 use super::segmenter::SAMPLE_RATE;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream};
+use cpal::{SampleFormat, Stream, StreamError};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+
+/// 録音中に届いたデバイスの知らせ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MicError {
+    /// デバイスが無くなった(cpal の `DeviceNotAvailable`)。iPhone なら連係が切れた(iPhone 側の接続解除か圏外)。
+    Gone,
+    /// そのほかの録音エラー。
+    Other(String),
+}
+
+/// 録音エラーの受け口。録音のスレッドや CoreAudio の聞き役から呼ばれる。
+pub type MicErrorSink = Arc<dyn Fn(MicError) + Send + Sync>;
 
 /// 録音デバイスの入口。試験では偽のデバイスに差し替える。
 pub trait MicSource: Send + Sync {
@@ -16,11 +28,12 @@ pub trait MicSource: Send + Sync {
     /// OS の既定のマイクの名前。
     fn default_device(&self) -> Option<String>;
     /// デバイスを開き、16kHz モノラルの音を `samples` へ流し始める。連係の接続で数秒かかることがある。
-    /// 戻り値を落とすと録音が止まり、デバイスが閉じる。
+    /// 録音中のエラーは `errors` へ渡す(閉じたあとは渡さない)。戻り値を落とすと録音が止まり、デバイスが閉じる。
     fn open(
         &self,
         device: Option<String>,
         samples: Sender<Vec<f32>>,
+        errors: MicErrorSink,
     ) -> Result<Box<dyn Send>, String>;
 }
 
@@ -42,8 +55,9 @@ impl MicSource for CpalMic {
         &self,
         device: Option<String>,
         samples: Sender<Vec<f32>>,
+        errors: MicErrorSink,
     ) -> Result<Box<dyn Send>, String> {
-        Capture::start(device, samples).map(|capture| Box::new(capture) as Box<dyn Send>)
+        Capture::start(device, samples, errors).map(|capture| Box::new(capture) as Box<dyn Send>)
     }
 }
 
@@ -108,6 +122,52 @@ pub fn fallback_device(
     names.iter().find(|name| !is_iphone_device(name)).cloned()
 }
 
+/// 録音エラーの関所。閉じたあとに届いた知らせは捨てる。
+/// cpal 0.15 は名前で開いたデバイス(既定でないデバイス)の `Stream` を落としても、デバイスの抜けを見張る聞き役と
+/// `AudioUnit` が循環参照で残る。止めた録音の聞き役が、後で iPhone が消えたときなどに知らせを出すので、ここで止める。
+#[derive(Clone)]
+struct ErrorGate {
+    closed: Arc<AtomicBool>,
+    sink: MicErrorSink,
+}
+
+impl ErrorGate {
+    fn new(sink: MicErrorSink) -> Self {
+        ErrorGate {
+            closed: Arc::new(AtomicBool::new(false)),
+            sink,
+        }
+    }
+
+    /// これ以降の知らせを捨てる。
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// 開いている録音の知らせなら記録して渡す。渡したら true。
+    fn report(&self, error: StreamError) -> bool {
+        if self.closed.load(Ordering::SeqCst) {
+            return false;
+        }
+        super::diag::log(format!("録音エラー: {error}"));
+        (self.sink)(match error {
+            StreamError::DeviceNotAvailable => MicError::Gone,
+            other => MicError::Other(other.to_string()),
+        });
+        true
+    }
+}
+
+/// 録音を閉じる。cpal 0.15 は `Stream` を落としても、名前で開いたデバイスの IO が止まらない(上の `ErrorGate`)ので、
+/// 落とす前に必ず `pause` で IO を止める(`AudioOutputUnitStop`)。止めないと iPhone が「Mac に接続中」のまま残る。
+fn close_stream(stream: Stream, gate: &ErrorGate) {
+    gate.close();
+    if let Err(error) = stream.pause() {
+        super::diag::log(format!("録音を止められない: {error}"));
+    }
+    drop(stream);
+}
+
 /// 録音中の印。落とすとデバイスが閉じ切るまで待つ。
 pub struct Capture {
     stop: Sender<()>,
@@ -120,16 +180,21 @@ impl Capture {
     pub fn start(
         device_name: Option<String>,
         samples: Sender<Vec<f32>>,
+        errors: MicErrorSink,
     ) -> Result<Capture, String> {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let thread = thread::spawn(move || match open_input(device_name, samples) {
+        let gate = ErrorGate::new(errors);
+        let thread = thread::spawn(move || match open_input(device_name, samples, &gate) {
             Ok(stream) => {
                 let _ = ready_tx.send(Ok(()));
                 let _ = stop_rx.recv();
-                drop(stream);
+                close_stream(stream, &gate);
             }
             Err(message) => {
+                // cpal 0.15 は聞き役を付けてから `AudioUnit` を始めるので、始められずに失敗すると、聞き役と
+                // こちらの受け口を持ったストリームが cpal の中に残る。閉じた録音として後の知らせを捨てる。
+                gate.close();
                 let _ = ready_tx.send(Err(message));
             }
         });
@@ -152,7 +217,11 @@ impl Drop for Capture {
     }
 }
 
-fn open_input(device_name: Option<String>, samples: Sender<Vec<f32>>) -> Result<Stream, String> {
+fn open_input(
+    device_name: Option<String>,
+    samples: Sender<Vec<f32>>,
+    gate: &ErrorGate,
+) -> Result<Stream, String> {
     let host = cpal::default_host();
     let named = device_name.as_ref().and_then(|name| {
         host.input_devices()
@@ -179,7 +248,12 @@ fn open_input(device_name: Option<String>, samples: Sender<Vec<f32>>) -> Result<
         config.sample_format()
     ));
     let stream_config = config.config();
-    let on_error = |error| super::diag::log(format!("録音エラー: {error}"));
+    let on_error = {
+        let gate = gate.clone();
+        move |error| {
+            gate.report(error);
+        }
+    };
     let mut resampler = Resampler::new(rate);
     let mut deliver = move |mono: Vec<f32>| {
         let _ = samples.send(resampler.process(&mono));
@@ -210,9 +284,10 @@ fn open_input(device_name: Option<String>, samples: Sender<Vec<f32>>) -> Result<
         other => return Err(format!("対応していない音声形式です: {other:?}")),
     }
     .map_err(|e| format!("録音を開始できません: {e}"))?;
-    stream
-        .play()
-        .map_err(|e| format!("録音を開始できません: {e}"))?;
+    if let Err(error) = stream.play() {
+        close_stream(stream, gate);
+        return Err(format!("録音を開始できません: {error}"));
+    }
     Ok(stream)
 }
 
@@ -462,6 +537,18 @@ mod tests {
             .as_deref(),
             Some("MacBook Proのマイク")
         );
+    }
+
+    #[test]
+    fn errors_after_closing_are_dropped() {
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_received = received.clone();
+        let gate = ErrorGate::new(Arc::new(move |error| sink_received.lock().unwrap().push(error)));
+        assert!(gate.report(StreamError::DeviceNotAvailable));
+        let copy = gate.clone();
+        gate.close();
+        assert!(!copy.report(StreamError::DeviceNotAvailable), "閉じたあとの聞き役の知らせは捨てる");
+        assert_eq!(*received.lock().unwrap(), vec![MicError::Gone]);
     }
 
     #[test]

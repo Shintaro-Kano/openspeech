@@ -1,11 +1,13 @@
 //! 診断と画面確認の引数。引数ごとの処理は子モジュール、使い方と知っている引数の一覧は `MODES` 1 つから作る。
 
 use openspeech::app::VoiceApp;
+use openspeech::core::annotate;
 use openspeech::core::audio;
 use openspeech::core::caps_lock;
 use openspeech::core::assistant::{
-    self, AssistantRequest, EditCheck, ReplyKind, Target, MAX_REQUEST_GUIDANCE_CHARS, MAX_TARGET_CHARS,
+    self, Assistant, AssistantRequest, EditCheck, ReplyKind, Target, MAX_REQUEST_GUIDANCE_CHARS, MAX_TARGET_CHARS,
 };
+use openspeech::core::completion;
 use openspeech::core::guidance;
 use openspeech::core::corrector::CorrectionRequest;
 use openspeech::core::judge::changed_ranges;
@@ -15,7 +17,9 @@ use openspeech::core::segmenter::VoiceJudge;
 use openspeech::core::remote_asr;
 use openspeech::core::settings::{CorrectorBackend, GlobalSettings, RecognizerKind, TransferMethod};
 use openspeech::core::speechcpp::{self, VoiceDetector};
+use openspeech::core::dictionary::Template;
 use openspeech::core::store::Store;
+use openspeech::core::structure::{self, LineKind, StructureFile, TemplateStructure, Vocabulary};
 use openspeech::core::text_filter::apply_prefilters;
 use openspeech::core::voice_command::{match_after_correction, match_utterance, Match};
 use openspeech::core::transfer::{self, TransferRequest};
@@ -56,6 +60,10 @@ pub(crate) const MODES: &[Mode] = &[
         flags: &["--mic-check", "--device", "--iphone", "--out"],
     },
     Mode {
+        usage: "  --release-check [--device 名]     名前で開いて 1 秒録って閉じ、デバイスが止まったかを読む(動いたままなら 2)",
+        flags: &["--release-check", "--device"],
+    },
+    Mode {
         usage: "  --latency-check 秒 [--device 名|--iphone] [--save DIR] [--ratio R] [--no-vad]   切り出しと認識の遅れを測る",
         flags: &["--latency-check", "--device", "--iphone", "--save", "--ratio", "--no-vad"],
     },
@@ -72,8 +80,12 @@ pub(crate) const MODES: &[Mode] = &[
         flags: &["--correct-check", "--context", "--backend"],
     },
     Mode {
-        usage: "  --complete-check 依頼 [--previous 文] [--target 文|--target-file 場所 [--whole-text]] [--backend api|claude-code]\n                                                                   「ヘイ、クロード」の依頼(テンプレートの補完・文章の手直し)を試す",
-        flags: &["--complete-check", "--previous", "--target", "--target-file", "--whole-text", "--backend"],
+        usage: "  --complete-check 依頼 [--previous 文] [--target 文|--target-file 場所 [--whole-text]] [--backend api|claude-code] [--compare]\n                                                                   「ヘイ、クロード」の依頼(テンプレートの補完・文章の手直し)を試す(--compare で構造なしの全文経路と並べる)",
+        flags: &["--complete-check", "--previous", "--target", "--target-file", "--whole-text", "--backend", "--compare"],
+    },
+    Mode {
+        usage: "  --annotate-templates [--model モデル] [--only 名前] [--backend api|claude-code]\n                                                                   テンプレートに構造を付けて structure.json に書く(既定は Sonnet。辞書は書き換えない)",
+        flags: &["--annotate-templates", "--model", "--only", "--backend"],
     },
     Mode {
         usage: "  --caps-check 秒 [--set-on|--set-off]                Caps Lock と画面のロックの変化を見る",
@@ -112,11 +124,14 @@ mod tests {
     /// 引数の名前は運用の手順に残っているので、集合を変えない(計画書 §6)。1.0 より前の版の 37 個から、照合の経路を
     /// 外したとき(P5)に `--gemini-check`・`--together`・`--model`・`--heard`・`--checking` の 5 個を外した。
     /// 1.1.0 の後(post-release §7)に、手直しの依頼を試す `--target`・`--target-file`・`--whole-text` を足した。
-    const FLAGS: [&str; 35] = [
-        "--add-to-dock", "--backend", "--caps-check", "--complete-check", "--context",
+    /// 単位 S2(§16.8)で、テンプレートの注釈 `--annotate-templates`・`--model`・`--only` を足した(`--model` は
+    /// P5 で外した照合の物とは別。注釈役のモデル)。単位 S3 で、補完の構造の経路と全文経路を並べる `--compare` を足した。
+    /// iPhone を放さない不具合(docs/iphone-release-fix.md)で、閉じたあとにデバイスが止まったかを読む `--release-check` を足した。
+    const FLAGS: [&str; 40] = [
+        "--add-to-dock", "--annotate-templates", "--backend", "--caps-check", "--compare", "--complete-check", "--context",
         "--correct-check", "--device", "--help", "--install-app", "--iphone",
-        "--latency-check", "--list-devices", "--method", "--mic-check", "--vad-threshold",
-        "--trace", "--no-vad", "--open", "--out", "--previous", "--ratio", "--recognize-check", "--save",
+        "--latency-check", "--list-devices", "--method", "--mic-check", "--model", "--only", "--vad-threshold",
+        "--trace", "--no-vad", "--open", "--out", "--previous", "--ratio", "--recognize-check", "--release-check", "--save",
         "--say", "--screenshot", "--segment-check", "--set-off", "--set-on", "--start-ms",
         "--target", "--target-file", "--transfer-check", "--version", "--wait", "--whole-text",
     ];

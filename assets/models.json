@@ -9,7 +9,6 @@
       "size": 656381472,
       "sha256": "cd5f60b2f1c411404b83fca4a65e3ce30a26d9e951b6a346529e65f22758afeb",
       "urls": [
-        "https://openspeech.unitedradiology.jp/models/Haas-616M-ja-v1.0-Q8_0.gguf",
         "https://huggingface.co/sakasegawa/Haas-ja-v1.0-GGUF/resolve/main/Haas-616M-ja-v1.0-Q8_0.gguf"
       ],
       "license": "Apache-2.0",
@@ -23,7 +22,6 @@
       "size": 1238624,
       "sha256": "2fc312514e5fc4fa4ffd02b25c76a4853fa4130e8fb9777d01502183b01238cb",
       "urls": [
-        "https://openspeech.unitedradiology.jp/models/silero-vad-309K-v6.2-F32.gguf",
         "https://huggingface.co/sakasegawa/silero-vad-GGUF/resolve/main/silero-vad-309K-v6.2-F32.gguf"
       ],
       "license": "MIT",

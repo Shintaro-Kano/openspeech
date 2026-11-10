@@ -1,0 +1,2223 @@
+{
+  "_note": "Claude Code(claude -p)の注釈役の答えをそのまま録った物。tests/annotate.rs の record_live_answers で作る。",
+  "answers": {
+    "CTコロノグラフィ": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "手技"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "目的"
+        },
+        {
+          "i": 2,
+          "kind": "blank",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "体位"
+        },
+        {
+          "i": 4,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "大腸拡張"
+        },
+        {
+          "i": 5,
+          "kind": "blank",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 6,
+          "kind": "heading",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 7,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "大腸病変(精査加療)"
+        },
+        {
+          "i": 8,
+          "kind": "blank",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 9,
+          "kind": "heading",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 10,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "大腸病変(経過観察)"
+        },
+        {
+          "i": 11,
+          "kind": "blank",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 12,
+          "kind": "heading",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 13,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "他臓器"
+        },
+        {
+          "i": 14,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肺(撮像範囲)"
+        },
+        {
+          "i": 15,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胸水・腹水"
+        },
+        {
+          "i": 16,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹部骨盤リンパ節"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "憩室",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "大腸病変(経過観察)"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "前立腺MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "前立腺サイズ"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "癌疑い"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "精嚢・膀胱"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "骨盤リンパ節"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "PI-RADS カテゴリー4/5",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "癌疑い"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "肉柱形成",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "精嚢・膀胱"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "副鼻腔CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "鼻中隔"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "副鼻腔"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "乳突蜂巣"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "中耳"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "鼻中隔偏位",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "鼻中隔"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "副鼻腔炎",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "副鼻腔"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "貯留嚢胞",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "副鼻腔"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "女性骨盤MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "子宮体部"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "子宮内膜"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "子宮頚部"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "卵巣"
+        },
+        {
+          "i": 4,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "内膜症"
+        },
+        {
+          "i": 5,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹水"
+        },
+        {
+          "i": 6,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "骨盤リンパ節"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "子宮筋腫",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "子宮体部"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "ナボット嚢胞",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "子宮頚部"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "機能性嚢胞",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "卵巣"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "腹水",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "腹水"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "胸部CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肺"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胸水"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胸部リンパ節"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "上腹部(撮像範囲)"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "apical cap",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "肺陳旧性変化",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "肺気腫",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "すりガラス結節",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "非結核性抗酸菌症",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "胸部骨盤単純CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肺"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胸水"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胸部リンパ節"
+        },
+        {
+          "i": 3,
+          "kind": "blank",
+          "organs": [],
+          "slot": null
+        },
+        {
+          "i": 4,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肝"
+        },
+        {
+          "i": 5,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肝実質"
+        },
+        {
+          "i": 6,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胆嚢"
+        },
+        {
+          "i": 7,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "総胆管"
+        },
+        {
+          "i": 8,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "膵"
+        },
+        {
+          "i": 9,
+          "kind": "list_negation",
+          "organs": [
+            "脾",
+            "腎",
+            "副腎"
+          ],
+          "slot": "脾腎副腎"
+        },
+        {
+          "i": 10,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "消化管"
+        },
+        {
+          "i": 11,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹水"
+        },
+        {
+          "i": 12,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹部骨盤リンパ節"
+        }
+      ],
+      "modules": []
+    },
+    "腰椎CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "関節突起間"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "椎体"
+        }
+      ],
+      "modules": []
+    },
+    "腰椎MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "椎体"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "椎間板"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "脊柱管・椎間孔"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": true,
+          "name": "変形性腰椎症",
+          "purpose": null,
+          "sex": null,
+          "shape": "whole",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "初期",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "椎体"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "進行",
+              "sex": null,
+              "slot": "靭帯・椎間関節",
+              "target": [
+                "椎体"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 2,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "初期",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "椎間板"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 3,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "波及",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 4,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "波及",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 5,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "障害",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "圧迫骨折",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "椎体"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "腰椎分離症",
+          "purpose": "分離症",
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "関節突起間",
+              "target": [
+                "椎体"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "腹部MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "膵"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "膵"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肝"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胆嚢"
+        },
+        {
+          "i": 4,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "総胆管"
+        },
+        {
+          "i": 5,
+          "kind": "list_negation",
+          "organs": [
+            "脾",
+            "腎",
+            "副腎"
+          ],
+          "slot": "脾腎副腎"
+        },
+        {
+          "i": 6,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "リンパ節・腹水"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "IPMN",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "膵"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "肝",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肝"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "胆嚢",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "胆嚢"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "胆嚢"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "腎・副腎",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": "腎",
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": "副腎",
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脾腎副腎"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "腹部骨盤CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肝"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "胆嚢"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "総胆管"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "膵"
+        },
+        {
+          "i": 4,
+          "kind": "list_negation",
+          "organs": [
+            "脾",
+            "腎",
+            "副腎"
+          ],
+          "slot": "脾腎副腎"
+        },
+        {
+          "i": 5,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "消化管"
+        },
+        {
+          "i": 6,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹水"
+        },
+        {
+          "i": 7,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "腹部骨盤リンパ節"
+        },
+        {
+          "i": 8,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "肺(撮像範囲)"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": "若年",
+          "graded": false,
+          "name": "若い女性",
+          "purpose": null,
+          "sex": "女",
+          "shape": "whole",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": 0,
+              "list_organs": [
+                "肝",
+                "胆",
+                "膵",
+                "脾",
+                "腎",
+                "副腎"
+              ],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [
+                {
+                  "organ": "肝",
+                  "slots": [
+                    "肝"
+                  ]
+                },
+                {
+                  "organ": "胆",
+                  "slots": [
+                    "胆嚢",
+                    "総胆管"
+                  ]
+                },
+                {
+                  "organ": "膵",
+                  "slots": [
+                    "膵"
+                  ]
+                },
+                {
+                  "organ": "脾",
+                  "slots": [
+                    "脾腎副腎"
+                  ]
+                },
+                {
+                  "organ": "腎",
+                  "slots": [
+                    "脾腎副腎"
+                  ]
+                },
+                {
+                  "organ": "副腎",
+                  "slots": [
+                    "脾腎副腎"
+                  ]
+                }
+              ],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肝",
+                "胆嚢",
+                "総胆管",
+                "膵",
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "子宮・付属器",
+              "target": [
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": 2,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "消化管"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 3,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "腹水"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": 4,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肺(撮像範囲)"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": 5,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "胸水",
+              "target": [
+                "肺(撮像範囲)"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "肝",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肝"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "肝"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "胆",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "胆嚢"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "胆嚢"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "膵",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "膵"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "腎・副腎・前立腺",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": "腎",
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": "腎",
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 2,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": "副腎",
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脾腎副腎"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 3,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "前立腺",
+              "target": [
+                "脾腎副腎"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "腸管",
+          "purpose": null,
+          "sex": null,
+          "shape": "per_line",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "消化管"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "消化管"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 2,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "消化管"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "頭部CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "頭蓋内"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "脳形態"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "含気(副鼻腔・乳突蜂巣)"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "白質病変",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "benign",
+              "prefix": "その他、",
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "頭蓋内"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "脳萎縮",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脳形態"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "水頭症",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脳形態"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "頭部MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "急性期梗塞"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "出血痕"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "頭蓋内"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "主幹動脈"
+        },
+        {
+          "i": 4,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "脳形態"
+        },
+        {
+          "i": 5,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "含気(副鼻腔・乳突蜂巣)"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "白質病変",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "頭蓋内"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "めまいの異常なし",
+          "purpose": "めまい",
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "小脳橋角部・内耳",
+              "target": [
+                "脳形態"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "認知症",
+          "purpose": "認知症",
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脳形態"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "頸椎MRI": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "配列"
+        },
+        {
+          "i": 1,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "椎間板"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "脊柱管・椎間孔"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "髄内"
+        }
+      ],
+      "modules": [
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "直線化・軽度変性",
+          "purpose": null,
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": null,
+              "target": [
+                "配列",
+                "椎間板"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": true,
+          "name": "変形性頸椎症",
+          "purpose": null,
+          "sex": null,
+          "shape": "whole",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 0,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "初期",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "配列"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 1,
+              "list_organs": [],
+              "mode": "append",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "進行",
+              "sex": null,
+              "slot": "靭帯・椎間関節",
+              "target": [
+                "配列"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 2,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "初期",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "椎間板"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 3,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "波及",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 4,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "障害",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 5,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "abnormal",
+              "prefix": null,
+              "purpose": null,
+              "role": "波及",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "脊柱管・椎間孔"
+              ]
+            },
+            {
+              "age_band": null,
+              "auto": false,
+              "grades": null,
+              "line": 6,
+              "list_organs": [],
+              "mode": "replace",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": "陰性",
+              "sex": null,
+              "slot": null,
+              "target": [
+                "髄内"
+              ]
+            }
+          ]
+        },
+        {
+          "age_band": null,
+          "graded": false,
+          "name": "外傷",
+          "purpose": "外傷",
+          "sex": null,
+          "shape": "single",
+          "variants": [
+            {
+              "age_band": null,
+              "auto": true,
+              "grades": null,
+              "line": null,
+              "list_organs": [],
+              "mode": "prepend",
+              "organ": null,
+              "organ_slots": [],
+              "polarity": "negative",
+              "prefix": null,
+              "purpose": null,
+              "role": null,
+              "sex": null,
+              "slot": "外傷性変化",
+              "target": [
+                "配列"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "頸部単純CT": {
+      "lines": [
+        {
+          "i": 0,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "咽喉頭"
+        },
+        {
+          "i": 1,
+          "kind": "list_negation",
+          "organs": [
+            "耳下腺",
+            "顎下線"
+          ],
+          "slot": "唾液腺"
+        },
+        {
+          "i": 2,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "甲状腺"
+        },
+        {
+          "i": 3,
+          "kind": "sentence",
+          "organs": [],
+          "slot": "頸部リンパ節"
+        }
+      ],
+      "modules": []
+    }
+  },
+  "model": "claude-sonnet-5-5",
+  "recorded": "2026-11-09T23:22:46+09:00"
+}

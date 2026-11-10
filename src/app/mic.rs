@@ -117,6 +117,28 @@ impl VoiceApp {
         }
     }
 
+    /// 録音中にデバイスが無くなった(cpal の `DeviceNotAvailable`)。iPhone なら黙って Mac のマイクへ移らず、
+    /// マイクを切って知らせる。iPhone 側の「接続解除」でも圏外でも同じ知らせが届くので、知らせは断定しない。
+    /// 3 秒ごとの探し直しが先に一覧から消えたことに気づいたときも、同じくマイクを切って同じ知らせを出す。
+    /// どちらが先でもマイクが切れるので、後から届いた方は何もしない(二重に出ない)。
+    pub(super) fn mic_lost(&mut self, generation: u64) {
+        if generation != self.microphone.generation || self.mic == MicState::Off {
+            return;
+        }
+        let label = self
+            .active_device_label()
+            .unwrap_or_else(|| "(既定)".to_string());
+        if !self.using_iphone() {
+            diag::log(format!("録音デバイスが無くなった device={label}"));
+            return;
+        }
+        diag::log(format!(
+            "iPhone の接続が切れた device={label}(iPhone 側の接続解除か圏外)"
+        ));
+        self.stop_mic();
+        self.notify_error(IPHONE_LOST);
+    }
+
     /// 音が届いているかを見張る。時刻を受けるのは、試験で待ちの上限まで進めるため。
     pub fn watch_mic(&mut self, now: Instant) {
         if self.mic == MicState::Off {
@@ -341,15 +363,18 @@ impl VoiceApp {
                 if !self.using_iphone() && after && !self.microphone.iphone_gave_up {
                     self.restart_mic_if_on();
                     self.notify("iPhone のマイクに切り替えました");
-                } else if active_gone {
+                } else if active_gone && after {
                     self.restart_mic_if_on();
-                    if self.using_iphone() {
-                        self.notify("使っていた iPhone が見えなくなったため、別の iPhone に切り替えました");
-                    } else {
-                        self.notify_error(
-                            "iPhone が見えなくなったため、いつもの録音デバイスに戻しました",
-                        );
-                    }
+                    self.notify("使っていた iPhone が見えなくなったため、別の iPhone に切り替えました");
+                } else if active_gone {
+                    // cpal の `DeviceNotAvailable`(`mic_lost`)より先に一覧から消えたことに気づいた。同じく Mac のマイクへ
+                    // 移らずに切って、戻し方を知らせる(どちらが先に届いても同じ知らせ。後から届いた方は捨てられる)。
+                    diag::log(format!(
+                        "iPhone の接続が切れた device={}(一覧から消えた)",
+                        audio::display_device_name(active)
+                    ));
+                    self.stop_mic();
+                    self.notify_error(IPHONE_LOST);
                 }
             }
         }

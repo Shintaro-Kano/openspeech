@@ -4,7 +4,7 @@ mod cli;
 
 use cli::*;
 use openspeech::app::{VoiceApp, APP_NAME};
-use openspeech::core::{audio, mic_access, speechcpp};
+use openspeech::core::{audio, mic_access, speechcpp, store};
 use openspeech::ui::{theme, FULL_SIZE};
 use std::path::PathBuf;
 
@@ -52,6 +52,9 @@ fn main() {
     if args.iter().any(|a| a == "--mic-check") {
         speechcpp::exit(run_mic_check(&args));
     }
+    if args.iter().any(|a| a == "--release-check") {
+        speechcpp::exit(run_release_check(&args));
+    }
     if args.iter().any(|a| a == "--segment-check") {
         speechcpp::exit(run_segment_check(&args));
     }
@@ -66,6 +69,9 @@ fn main() {
     }
     if args.iter().any(|a| a == "--complete-check") {
         speechcpp::exit(run_complete_check(&args));
+    }
+    if args.iter().any(|a| a == "--annotate-templates") {
+        speechcpp::exit(run_annotate_templates(&args));
     }
     if args.iter().any(|a| a == "--caps-check") {
         speechcpp::exit(run_caps_check(&args));
@@ -86,8 +92,12 @@ fn main() {
         .with_inner_size(FULL_SIZE)
         .with_min_inner_size([420.0, 52.0])
         .with_icon(window_icon());
+    // データの置き場を差し替えた起動(撮影・試験の `OPENSPEECH_HOME`)では、画面の状態(eframe の app.ron)も
+    // そこに置く。eframe の既定はアプリ名の置き場(実データの app.ron)で、撮影が利用者の窓の位置を消していた。
+    let persistence_path = std::env::var_os(store::HOME_ENV).map(|home| PathBuf::from(home).join("app.ron"));
     let options = eframe::NativeOptions {
         viewport,
+        persistence_path,
         ..Default::default()
     };
     let result = eframe::run_native(

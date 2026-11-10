@@ -15,10 +15,14 @@
 
 use super::claude_api;
 use super::corrector::{self, model_label};
-use super::dictionary::{template_key, Dictionary, Module};
+use super::dictionary::{template_key, Dictionary, Module, Template};
 use super::guidance;
 use super::judge::{adds_laterality, changed_ranges};
 use super::proc;
+use super::structure::{
+    group_levels, interval_of, module_lines, Condition, LineKind, Selection, StructureFile, TemplateStructure,
+    Variant, Vocabulary,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -55,14 +59,64 @@ const GUIDANCE_HEADER: &str = "依頼への答え方の指示:";
 
 /// 役割と答えの形の約束。答えを本文としてそのまま取り込むので、ここだけはコードで固定する。
 /// 答え方の規則は `DEFAULT_REQUEST_GUIDANCE`(利用者が `request.md` で書き換える)にある。
+/// 構造のあるテンプレート(§16.6、単位 S3)では本文を書かせず、選択(selections)だけを返させる。置くのはコード。
 const REQUEST_FRAME: &str = "あなたは音声入力アプリの中で、話者の依頼に答える係です。下の指示に従って依頼に答えます。\n\
-答えは決められた形で書く: kind に依頼の種類(template / edit / none)、text に本文、reply に短い返事、\
-template に選んだテンプレートの先頭のキーワード(template のときだけ)、replace に言い直しかどうか。\n\
-text は本文だけで、説明や前置き、Markdown を書かない。\n";
+答えは決められた形で書く: kind に依頼の種類(template / edit / none)、template に選んだテンプレートの先頭のキーワード(template のときだけ)、\
+text に本文、selections に選択、reply に短い返事、replace に言い直しかどうか。\n\
+text は本文だけで、説明や前置き、Markdown を書かない。\n\
+テンプレート一覧で「(構造あり)」と書かれたテンプレートを補完するときは、本文を書かずに selections で答え、text は null にする\
+(本文はアプリが組み立てる)。selections の 1 つは次のどちらか:\n\
+- 所見モジュールを使う: module にモジュール名、line にその行の番号(「行ごと」のモジュールのとき。ほかは null)、\
+text にその文(言われた値を入れる。どの行・どの文を使うかは「使い方」に従い、言われたときだけの文は省き、\
+〔　〕のまま残すとある行は〔　〕のまま選ぶ)。行末の《》は出る程度で、依頼に程度の語があれば grade にその段\
+(軽度・中等度・高度)を書き、その程度で出る行を選ぶ。程度の語が無ければ grade は null。\n\
+- 本文の行を直す(〔　〕を埋める、モジュールの無い所見、使い方が他の文も直せと言うとき): module は null、line に本文の行番号、\
+text にその行の直した文。「(列挙: …)」の行の一部の臓器だけを直すときは organ にその臓器を書き、text はその臓器の文だけにする。\n\
+使わない項目は null。何も言われていなければ selections は空。「(自動」と書かれた行は文脈に合えばアプリが置くので、\
+その所見が言われていなければ選ばない(言われたときは選び、言われた通りに文を直す)。\n\
+構造の無いテンプレート、「(全体差し替え」と書かれたモジュールを使うとき、言い直し(replace が true)、依頼に「全文で答える」とあるときは、\
+selections を空にして text に本文全体を書く。\n";
 
 /// 依頼への答え方の指示。利用者が `request.md` で自由に書き換える。ファイルが無いか空ならこれをそのまま使い、
 /// 「依頼の指示を編集…」で初めて作るファイルの中身もこれ。先頭の説明は `<!-- -->` の注釈で、送らない。
+/// 単位 S3(§16.6・§16.13・§16.14)で規則 1・4〜8 を書き換えた: 候補、構造ありのテンプレート、程度の語、「〜のみ」と
+/// 検査名が無いとき、言い直しと全文の規則を「全文で答えるとき」の意味に。前の既定は `REQUEST_GUIDANCE_1_1`。
 pub const DEFAULT_REQUEST_GUIDANCE: &str = "\
+<!--
+ここに書いたことは、「ヘイクロード」の依頼を Claude に渡すときの指示としてそのまま送られます。自由に書き換えられます。
+空にするとアプリの既定(初めに書かれていたこの内容)が使われます。
+アプリが決めているのは、答えの形(依頼の種類・本文・選択・返事)と、構造のあるテンプレートで本文を組み立てること、長すぎる本文や左右が変わった答えを使わない守りです。
+この <!-- --> で囲んだ部分は Claude に送られません。
+-->
+# 役割
+音声入力アプリの中で、放射線科医の所見のテンプレートを補完し、頼まれれば文章を手直しする係。話者は放射線科医で、依頼は音声認識の文なので、誤りや読みのままの語を含むことがある。
+テンプレートは検査名ごとの正常所見で、所見モジュール(異常があるときに差し替える文)が付くことがある。
+
+# 依頼の種類
+- template: 検査名やテンプレートの内容を言い、所見の文章を作ってほしい依頼(例: 「胸部CT。右上葉にすりガラス結節」)
+- edit: 添えられた「対象の文章」を直してほしい依頼(例: 「文章を意味が一貫するように整えて」「誤字を直して」「矛盾がないか確認して」)。対象の文章が無ければ none にし、reply に「対象の文章がありません」と書く
+- none: どちらでもない、または合うテンプレートが無い。text は null にし、reply に理由を 30 字以内で書く
+
+# テンプレートの補完(template)
+1. 下の「テンプレート一覧」から依頼に合うものを 1 つ選ぶ。検査名(別名を含む)で言われればそれ、無ければ内容で選ぶ(依頼に「候補」が添えてあれば、その中から選ぶ)。
+2. 依頼で言われた値(部位・大きさ・個数・有無など)を正常所見の該当する箇所に入れる。言われていない箇所は文のまま残し、所見を作らない。〔　〕は言われなければ〔　〕のまま。
+3. テンプレートが計算値を含むときだけ計算し、式を括弧で併記する(例: 約 64 mL(0.52×5.5×4.5×5.0))。
+4. 所見モジュールは、依頼でその所見が言われたときだけ使う。使うときは正常所見のうち同じ臓器・項目の文をモジュールの文と差し替え、ほかの文は残す。「使い方」があればそれに従う(全体を差し替える、文を足す、など)。言われていないモジュールは使わない。構造ありのテンプレートでは置き場所はアプリが決めるので、使うモジュールの行と文を選ぶだけでよい。
+5. 左右・否定は言われた通り。程度・分布・数の語(軽度・高度・散在・多発など)も言われた通りに書き、言われていなければテンプレートの語のまま。言い換え・要約・説明文・Markdown は書かない。
+6. 検査名が無いときは内容で選び、言われていない所見は作らない。「〜のみ」は言われた所見だけが陽性という意味で、ほかの正常文は省かない。
+7. 「直前に補完した文章」が添えられていて、依頼がその文章の言い直し(値の変更・追記・削除)なら replace を true にし、text にはその文章を直した全文を書く(言い直しはいつも全文で答える)。新しい依頼なら replace は false。
+8. 全文で答えるとき(構造の無いテンプレートなど)は、text に補完した本文だけを書く。reply は空(null)にする。
+
+# 文章の手直し(edit)
+- text には「対象の文章」を直した全文を書く(対象の全体を置き換えるので、直さない部分もそのまま含める)。直すところが無ければ対象の文章をそのまま書く。
+- 直してよいもの: 誤字・同音の取り違え、助詞、重複、文のつながり、前後で食い違う左右・有無・数(どちらが正しいか文脈から明らかなとき)。依頼で言われたこと(「〜を〜に直して」など)に従う。
+- してはいけないこと: 内容の追加・削除、否定の反転、依頼で言われていない左右の変更、数値と単位の変更、文体の変更、要約。
+- どちらが正しいか決められない矛盾(左右・有無・数など)は直さずに残し、reply に 60 字以内で指摘する。直すところが無ければ reply に「直すところはありません」と書く。
+";
+
+/// 1.1.0 の既定の指示(S3 の前)。利用者の `request.md` がこれと同じなら、新しい既定に置き換えて送り
+/// (`request_guidance_text`)、起動時に一度だけファイルも書き換える(`Store::migrate_request_guidance`、D14)。
+pub const REQUEST_GUIDANCE_1_1: &str = "\
 <!--
 ここに書いたことは、「ヘイクロード」の依頼を Claude に渡すときの指示としてそのまま送られます。自由に書き換えられます。
 空にするとアプリの既定(初めに書かれていたこの内容)が使われます。
@@ -176,6 +230,16 @@ pub struct AssistantRequest {
     pub previous: Option<String>,
     /// 対象の文章(選択範囲、無ければ全文の先頭)。エディターが空なら None。
     pub target: Option<Target>,
+    /// コードが依頼の文から取った文脈の表示(「女性・若年」。`context::context_label`)。空なら添えない(§16.6)。
+    pub context: String,
+    /// 口述の程度語が指す段(§16.13)。空なら添えない。
+    pub grades: Vec<String>,
+    /// 検査名が無い依頼の候補の添え書き(「腹部骨盤CT・腹部MRI」「腹部MRI(エディターの文章から)」)。空なら添えない(§16.14)。
+    pub candidates: String,
+    /// 構造を使わず全文で答えさせるテンプレート(描画できなかったときの 2 回目の依頼、§16.6)。
+    pub full_text: Option<String>,
+    /// 選択で答え直させるテンプレート(構造のあるテンプレートに本文で答えたときの 2 回目の依頼)。
+    pub selections_only: Option<String>,
 }
 
 /// 依頼の種類(Claude の見立て)。
@@ -201,6 +265,9 @@ pub struct AssistantReply {
     pub reply: Option<String>,
     /// 直前に補完した文章の言い直しか(そのときは新しく足さず、その文章を置き換える)。
     pub replace: bool,
+    /// 構造のあるテンプレートの選択(§16.6)。Claude の答えのまま(本文の行の直しは `module` が無く `line` だけの物)。
+    /// 充填・臨時への読み替えと守りは `completion.rs`。
+    pub selections: Vec<Selection>,
 }
 
 pub trait Assistant: Send + Sync {
@@ -213,13 +280,15 @@ pub trait Assistant: Send + Sync {
 }
 
 /// テンプレート一覧の節。「### キーワード(「、」区切り)」の行に正常所見を続け、所見モジュールがあれば
-/// 「- 名前: 文」(続きの行は字下げ)と「使い方」を添える。
-fn template_section(dictionary: &Dictionary) -> String {
+/// 「- 名前: 文」(続きの行は字下げ)と「使い方」を添える。構造のあるテンプレート(源泉のハッシュで引ける物)は
+/// `structured_section` の形(行番号つき)で載せ、Claude には選択だけを返させる(§16.6)。
+fn template_section(dictionary: &Dictionary, structures: &StructureFile) -> String {
     let mut section = String::from("\nテンプレート一覧:\n");
     if dictionary.templates.is_empty() {
         section.push_str("(登録なし)\n");
         return section;
     }
+    let vocabulary = Vocabulary::builtin().with_extras(structures);
     for template in dictionary.templates.iter().take(MAX_TEMPLATES) {
         let keywords: Vec<&str> = template
             .keywords
@@ -233,23 +302,21 @@ fn template_section(dictionary: &Dictionary) -> String {
         section.push_str("### ");
         section.push_str(&keywords.join("、"));
         section.push('\n');
+        if let Some(structure) = structures.structure_for(template) {
+            section.push_str(&structured_section(template, structure, &vocabulary));
+            section.push('\n');
+            continue;
+        }
         section.push_str(template.body.trim_end());
         section.push('\n');
         // 文の無いモジュール(名前だけ書いた物)は渡さない。
-        let modules: Vec<&Module> = template
-            .modules
-            .iter()
-            .filter(|m| !m.name.trim().is_empty() && !m.text.trim().is_empty())
-            .collect();
+        let modules: Vec<&Module> = shown_modules(template);
         if !modules.is_empty() {
             section.push_str("所見モジュール:\n");
             for module in modules {
                 let text = module.text.trim().replace('\n', "\n  ");
                 section.push_str(&format!("- {}: {text}\n", module.name.trim()));
-                let note = module.note.trim();
-                if !note.is_empty() {
-                    section.push_str(&format!("  使い方: {}\n", note.replace('\n', " ")));
-                }
+                push_note(&mut section, module);
             }
         }
         section.push('\n');
@@ -257,19 +324,163 @@ fn template_section(dictionary: &Dictionary) -> String {
     section
 }
 
+/// Claude に見せるモジュール(名前と文のある物)。
+fn shown_modules(template: &Template) -> Vec<&Module> {
+    template
+        .modules
+        .iter()
+        .filter(|m| !m.name.trim().is_empty() && !m.text.trim().is_empty())
+        .collect()
+}
+
+fn push_note(section: &mut String, module: &Module) {
+    let note = module.note.trim();
+    if !note.is_empty() {
+        section.push_str(&format!("  使い方: {}\n", note.replace('\n', " ")));
+    }
+}
+
+/// 変種の札: 文脈で当たる物は「(自動: 女・若年)」、条件だけの物は「(条件: 男)」。
+fn variant_mark(variant: &Variant) -> String {
+    let label = variant.condition.as_ref().map(Condition::label).unwrap_or_default();
+    match (variant.auto, label.is_empty()) {
+        (true, true) => "(自動)".to_string(),
+        (true, false) => format!("(自動: {label})"),
+        (false, false) => format!("(条件: {label})"),
+        (false, true) => String::new(),
+    }
+}
+
+/// 程度の区間の表示(《全程度》《中等度以上》《高度》《軽度〜中等度》)。
+fn interval_label(interval: &[String], levels: &[String]) -> String {
+    let positions: Vec<usize> = interval.iter().filter_map(|g| levels.iter().position(|l| l == g)).collect();
+    let (Some(&first), Some(&last)) = (positions.iter().min(), positions.iter().max()) else {
+        return String::new();
+    };
+    let text = if first == 0 && last + 1 == levels.len() {
+        "全程度".to_string()
+    } else if first == last {
+        levels[first].clone()
+    } else if last + 1 == levels.len() {
+        format!("{}以上", levels[first])
+    } else {
+        format!("{}〜{}", levels[first], levels[last])
+    };
+    format!("《{text}》")
+}
+
+/// 構造のあるテンプレートの節。本文の行に番号を付け(列挙否定の行は臓器を添える)、モジュールは
+/// 「行ごと」(束・行に割った所見群。行番号で選ぶ)、まとめて 1 つ、全体差し替え(全文で答える)に分けて見せる。
+/// 文脈で当たる行に「(自動…)」、条件のある行に「(条件: …)」、程度のある所見群の行に出る区間《…》を付ける。
+fn structured_section(template: &Template, structure: &TemplateStructure, vocabulary: &Vocabulary) -> String {
+    let mut section = String::from("(構造あり)\n本文:\n");
+    let body = super::structure::canonical_lines(&template.body);
+    for (i, line) in body.iter().enumerate() {
+        let info = structure.lines.get(i);
+        let list = info
+            .filter(|l| l.kind == LineKind::ListNegation && !l.organs.is_empty())
+            .map(|l| format!("(列挙: {})", l.organs.join("・")))
+            .unwrap_or_default();
+        if line.is_empty() {
+            section.push_str(&format!("{i}:\n"));
+        } else {
+            section.push_str(&format!("{i}: {line}{list}\n"));
+        }
+    }
+    let modules = shown_modules(template);
+    if modules.is_empty() {
+        return section;
+    }
+    section.push_str("所見モジュール:\n");
+    for module in modules {
+        let name = module.name.trim();
+        let variants: Vec<&Variant> = structure
+            .variants
+            .iter()
+            .filter(|v| v.module == module.name && !v.derived)
+            .collect();
+        let whole = variants.iter().any(|v| v.is_whole());
+        let split = variants.iter().any(|v| v.is_whole() && v.split);
+        let lines = module_lines(module);
+        let per_line: Vec<&Variant> = variants.iter().copied().filter(|v| !v.is_whole() && v.line.is_some()).collect();
+        let unit: Vec<&Variant> = variants.iter().copied().filter(|v| !v.is_whole() && v.line.is_none()).collect();
+        let levels = group_levels(structure, vocabulary, &module.name);
+        if variants.is_empty() || (whole && !split) {
+            let why = if variants.is_empty() { "構造なし" } else { "全体差し替え" };
+            section.push_str(&format!("- {name}({why}。使うときは text に全文):\n"));
+            for line in &lines {
+                section.push_str(&format!("  {line}\n"));
+            }
+        } else if !per_line.is_empty() && (lines.len() > 1 || split) {
+            // 行に割った全体差し替えは、使い方に「全体を差し替える」とあっても行を選べば同じになる(Claude が全文で
+            // 答えないように)。
+            let how = match (levels.is_some(), split) {
+                (true, _) => "行ごと・程度あり。行末の《》は出る程度。使い方に全体の差し替えとあっても、使う行を選ぶ",
+                (false, true) => "行ごと。使い方に全体の差し替えとあっても、使う行を選ぶ",
+                (false, false) => "行ごと",
+            };
+            section.push_str(&format!("- {name}({how}):\n"));
+            for (index, line) in lines.iter().enumerate() {
+                let variant = per_line.iter().find(|v| v.line == Some(index));
+                let mut marks = variant.map(|v| variant_mark(v)).unwrap_or_default();
+                if let (Some(variant), Some(levels)) = (variant, levels.as_ref()) {
+                    marks.push_str(&interval_label(&interval_of(variant, vocabulary, levels), levels));
+                }
+                section.push_str(&format!("  {index}: {line}{marks}\n"));
+            }
+        } else {
+            let mark = unit.first().or(per_line.first()).map(|v| variant_mark(v)).unwrap_or_default();
+            section.push_str(&format!("- {name}{mark}: {}\n", lines.join("\n  ")));
+        }
+        push_note(&mut section, module);
+    }
+    section
+}
+
+/// 送る指示の元の文。`request.md` が 1.1.0 の既定のままなら(利用者が書き換えていない)、今の既定に読み替える
+/// (ファイルの書き換えは起動時の `Store::migrate_request_guidance`。CLI は書き換えずにこれで新しい既定を送る)。
+pub fn request_guidance_text(guidance: &str) -> &str {
+    if is_previous_default(guidance) {
+        DEFAULT_REQUEST_GUIDANCE
+    } else {
+        guidance
+    }
+}
+
+/// `request.md` が 1.1.0 の既定と同じか(注釈と前後の空白、改行の CRLF は見ない)。
+pub fn is_previous_default(guidance: &str) -> bool {
+    // 行末の空白(エディターが足すことがある)は見ない。
+    let sent = |text: &str| {
+        guidance::strip_comments(&text.replace("\r\n", "\n"))
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
+    };
+    !guidance.trim().is_empty() && sent(guidance) == sent(REQUEST_GUIDANCE_1_1)
+}
+
 /// 依頼への答え方の指示の節。`<!-- -->` の注釈は送らない。空(ファイルが無い・空・注釈だけ)なら既定の指示。
 fn guidance_section(guidance: &str) -> String {
-    let kept = guidance::prepare(guidance, DEFAULT_REQUEST_GUIDANCE, MAX_REQUEST_GUIDANCE_CHARS);
+    let kept = guidance::prepare(request_guidance_text(guidance), DEFAULT_REQUEST_GUIDANCE, MAX_REQUEST_GUIDANCE_CHARS);
     format!("\n{GUIDANCE_HEADER}\n{kept}\n")
 }
 
 /// 答えの形の約束、答え方の指示、テンプレート一覧、用語集をこの順に並べる。辞書と指示が変わらない限り同じ文なので、
-/// API 側のキャッシュが効く。
+/// API 側のキャッシュが効く。構造の無い辞書(未注釈)では S3 の前と同じテンプレート一覧になる。
 pub fn build_system_prompt(dictionary: &Dictionary, guidance: &str) -> String {
+    build_system_prompt_with(dictionary, &StructureFile::default(), guidance)
+}
+
+/// `build_system_prompt` に構造(`structure.json`)を添えた物。構造のあるテンプレートは行番号つきで載る。
+/// 文脈は載せない(依頼ごとに変わるので user message へ。§16.12 の決定)。辞書・構造・指示が同じなら同じ文。
+pub fn build_system_prompt_with(dictionary: &Dictionary, structures: &StructureFile, guidance: &str) -> String {
     [
         REQUEST_FRAME,
         &guidance_section(guidance),
-        &template_section(dictionary),
+        &template_section(dictionary, structures),
         &corrector::glossary_section(dictionary),
     ]
     .concat()
@@ -288,6 +499,26 @@ fn target_heading(target: &Target) -> String {
 pub fn build_user_message(request: &AssistantRequest) -> String {
     let mut message = String::from("依頼:\n");
     message.push_str(request.request.trim());
+    // コードが依頼の文から取った物(§16.6・§16.13・§16.14)。Claude には決めさせず、知らせるだけ。
+    if !request.context.is_empty() {
+        message.push_str(&format!("\n文脈(アプリが依頼の語から取った): {}", request.context));
+    }
+    if !request.grades.is_empty() {
+        message.push_str(&format!("\n程度の語: {}", request.grades.join("・")));
+    }
+    if !request.candidates.is_empty() {
+        message.push_str(&format!("\n候補: {}", request.candidates));
+    }
+    if let Some(name) = &request.selections_only {
+        message.push_str(&format!(
+            "\n構造で答える: テンプレート「{name}」は構造あり。本文(text)は null にし、selections で答える(行ごとのモジュールは使う行を 1 つずつ選ぶ)。"
+        ));
+    }
+    if let Some(name) = &request.full_text {
+        message.push_str(&format!(
+            "\n全文で答える: テンプレート「{name}」を、selections を空にして text に本文全体で書く。"
+        ));
+    }
     if let Some(target) = request.target.as_ref().filter(|t| !t.text.trim().is_empty()) {
         message.push_str("\n\n");
         message.push_str(&target_heading(target));
@@ -329,21 +560,71 @@ fn timeout_seconds(base: u64, request: &AssistantRequest) -> u64 {
     base + (target_chars(request) / TARGET_CHARS_PER_SECOND) as u64
 }
 
-/// 答えの形。5 つとも必ず書かせ、無い文は null にする。
-fn output_schema() -> Value {
+/// 答えの形。6 つとも必ず書かせ、無い文は null(選択が無ければ空の配列)にする。選択の 5 項目も必ず書かせる
+/// (構造化出力は閉じた object・全項目必須で揃える。S2 の注釈役と同じ)。
+pub fn output_schema() -> Value {
     let nullable_text = json!({"anyOf": [{"type": "string"}, {"type": "null"}]});
+    let nullable_integer = json!({"anyOf": [{"type": "integer"}, {"type": "null"}]});
     json!({
         "type": "object",
         "properties": {
             "kind": {"type": "string", "enum": ["template", "edit", "none"]},
             "template": nullable_text,
             "text": nullable_text,
+            "selections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "module": nullable_text,
+                        "line": nullable_integer,
+                        "grade": nullable_text,
+                        "organ": nullable_text,
+                        "text": {"type": "string"}
+                    },
+                    "required": ["module", "line", "grade", "organ", "text"],
+                    "additionalProperties": false
+                }
+            },
             "reply": nullable_text,
             "replace": {"type": "boolean"}
         },
-        "required": ["kind", "template", "text", "reply", "replace"],
+        "required": ["kind", "template", "text", "selections", "reply", "replace"],
         "additionalProperties": false
     })
+}
+
+/// 答えの選択を読む。文の無い物と、行もモジュールも無い物は捨てる(読めない選択は描画の前に落ちる)。
+fn selections_from(value: &Value) -> Vec<Selection> {
+    let Some(items) = value["selections"].as_array() else {
+        return Vec::new();
+    };
+    let text_of = |item: &Value, name: &str| {
+        item[name]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let text = item["text"].as_str().map(str::trim).unwrap_or_default().to_string();
+            let module = text_of(item, "module");
+            let line = item["line"].as_u64().and_then(|l| usize::try_from(l).ok());
+            if text.is_empty() || (module.is_none() && line.is_none()) {
+                return None;
+            }
+            Some(Selection {
+                module,
+                line,
+                grade: text_of(item, "grade"),
+                organ: text_of(item, "organ"),
+                text,
+                ..Selection::default()
+            })
+        })
+        .collect()
 }
 
 /// Messages API に送る本文。system はキャッシュし、考える量は `effort`、出力は形を固定する。
@@ -359,9 +640,10 @@ pub fn request_body(model: &str, system: &str, request: &AssistantRequest) -> Va
     )
 }
 
-/// 形を指定した答え({"kind", "template", "text", "reply", "replace"})を読む。空の文字列は null と同じに扱う。
-/// kind が無いか知らない値なら、本文があれば補完、無ければ該当なしと見なす。本文の無い手直しは該当なし。
-/// 本文も返事も無い答え、長すぎる本文は失敗にする(手直しの長さは対象の字数で `check_edit` が見る)。
+/// 形を指定した答え({"kind", "template", "text", "selections", "reply", "replace"})を読む。空の文字列は null と同じに扱う。
+/// kind が無いか知らない値なら、本文か選択があれば補完、無ければ該当なしと見なす。本文の無い手直しは該当なし。
+/// kind が template でテンプレート名があれば、本文も選択も無くてよい(構造のあるテンプレートの「異常なし」)。
+/// 本文も選択も返事も無い答え、長すぎる本文は失敗にする(手直しの長さは対象の字数で `check_edit` が見る)。
 pub fn reply_from_value(value: &Value) -> Result<AssistantReply, String> {
     let field = |name: &str| {
         value[name]
@@ -371,20 +653,26 @@ pub fn reply_from_value(value: &Value) -> Result<AssistantReply, String> {
             .map(str::to_string)
     };
     let text = field("text");
-    // 本文も返事も無い答えだけを失敗にする(kind が none の本文は捨てるが、該当なしの答えとしては読める)。
-    let empty = text.is_none() && field("reply").is_none();
-    let kind = match (value["kind"].as_str(), &text) {
-        (_, None) => ReplyKind::None,
-        (Some("edit"), Some(_)) => ReplyKind::Edit,
-        (Some("none"), Some(_)) => ReplyKind::None,
-        (_, Some(_)) => ReplyKind::Template,
+    let template = field("template");
+    let selections = selections_from(value);
+    let named_template = value["kind"].as_str() == Some("template") && template.is_some();
+    // 本文も選択も返事も無い答えだけを失敗にする(kind が none の本文は捨てるが、該当なしの答えとしては読める)。
+    let empty = text.is_none() && selections.is_empty() && field("reply").is_none() && !named_template;
+    let has_body = text.is_some() || !selections.is_empty();
+    let kind = match value["kind"].as_str() {
+        Some("edit") if text.is_some() => ReplyKind::Edit,
+        Some("edit") | Some("none") => ReplyKind::None,
+        Some("template") if has_body || named_template => ReplyKind::Template,
+        _ if has_body => ReplyKind::Template,
+        _ => ReplyKind::None,
     };
     let reply = AssistantReply {
         kind,
-        template: field("template"),
+        template,
         text: if kind == ReplyKind::None { None } else { text },
         reply: field("reply"),
         replace: value["replace"].as_bool().unwrap_or(false),
+        selections: if kind == ReplyKind::Template { selections } else { Vec::new() },
     };
     if let Some(text) = &reply.text {
         let limit = match kind {
@@ -470,11 +758,17 @@ pub struct ApiAssistant {
 }
 
 impl ApiAssistant {
-    pub fn new(model: &str, api_key: &str, dictionary: &Dictionary, guidance: &str) -> Self {
+    pub fn new(
+        model: &str,
+        api_key: &str,
+        dictionary: &Dictionary,
+        structures: &StructureFile,
+        guidance: &str,
+    ) -> Self {
         ApiAssistant {
             model: model.to_string(),
             api_key: api_key.to_string(),
-            system: build_system_prompt(dictionary, guidance),
+            system: build_system_prompt_with(dictionary, structures, guidance),
         }
     }
 }
@@ -511,13 +805,14 @@ impl ClaudeCodeAssistant {
         binary: &Path,
         work_dir: &Path,
         dictionary: &Dictionary,
+        structures: &StructureFile,
         guidance: &str,
     ) -> Self {
         ClaudeCodeAssistant {
             model: model.to_string(),
             binary: binary.to_path_buf(),
             work_dir: work_dir.to_path_buf(),
-            system: build_system_prompt(dictionary, guidance),
+            system: build_system_prompt_with(dictionary, structures, guidance),
         }
     }
 }
@@ -706,7 +1001,7 @@ mod tests {
         let again = AssistantRequest {
             request: "体積を 70 に直して".to_string(),
             previous: Some("前立腺MRI\n推定 64 mL。".to_string()),
-            target: None,
+            ..AssistantRequest::default()
         };
         let message = build_user_message(&again);
         assert!(message.starts_with("依頼:\n体積を 70 に直して\n\n直前に補完した文章"));
@@ -727,6 +1022,7 @@ mod tests {
             request: "誤字を直して".to_string(),
             previous: Some("直前の補完".to_string()),
             target: Some(Target { text: "右肺に結節を認めまる。".to_string(), selected, truncated }),
+            ..AssistantRequest::default()
         };
         assert_eq!(
             build_user_message(&target(true, false)),
@@ -744,6 +1040,7 @@ mod tests {
             request: "整えて".to_string(),
             previous: None,
             target,
+            ..AssistantRequest::default()
         };
         let selected = request(Some(Target { text: "文。".to_string(), selected: true, truncated: false }));
         let whole = request(Some(Target { text: "文。".to_string(), selected: false, truncated: false }));
@@ -757,7 +1054,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openspeech-fake-effort-{}", std::process::id()));
         let reply = r#"{"is_error":false,"structured_output":{"kind":"edit","template":null,"text":"文。","reply":null,"replace":false}}"#;
         let fake = proc::fake_claude(&dir, reply);
-        let assistant = ClaudeCodeAssistant::new("claude-opus-5-5", &fake, &dir, &dictionary(), "");
+        let assistant = ClaudeCodeAssistant::new("claude-opus-5-5", &fake, &dir, &dictionary(), &StructureFile::default(), "");
         assistant.complete(&selected).unwrap();
         assistant.complete(&whole).unwrap();
         let log = std::fs::read_to_string(dir.join("claude.log")).unwrap();
@@ -780,7 +1077,12 @@ mod tests {
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["output_config"]["effort"], "low");
         let schema = &body["output_config"]["format"]["schema"];
-        assert_eq!(schema["required"], json!(["kind", "template", "text", "reply", "replace"]));
+        assert_eq!(schema["required"], json!(["kind", "template", "text", "selections", "reply", "replace"]));
+        assert_eq!(schema["properties"]["selections"]["items"]["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["selections"]["items"]["required"],
+            json!(["module", "line", "grade", "organ", "text"])
+        );
         assert_eq!(schema["properties"]["kind"]["enum"], json!(["template", "edit", "none"]));
         assert_eq!(schema["additionalProperties"], false);
         assert_eq!(body["messages"][0]["content"], "依頼:\n胸部CT");
@@ -793,6 +1095,7 @@ mod tests {
             Path::new("/usr/bin/true"),
             Path::new("/tmp"),
             &dictionary(),
+            &StructureFile::default(),
             "",
         );
         assert!(output_schema().to_string().contains("\"template\""));
@@ -806,7 +1109,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("openspeech-fake-complete-{}", std::process::id()));
         let reply = r#"{"is_error":false,"structured_output":{"kind":"template","template":"胸部CT","text":"肺野に異常なし。","reply":null,"replace":false}}"#;
         let fake = proc::fake_claude(&dir, reply);
-        let assistant = ClaudeCodeAssistant::new("claude-opus-5-5", &fake, &dir, &dictionary(), "");
+        let assistant = ClaudeCodeAssistant::new("claude-opus-5-5", &fake, &dir, &dictionary(), &StructureFile::default(), "");
         let request = AssistantRequest {
             request: "胸部CT".to_string(),
             ..AssistantRequest::default()

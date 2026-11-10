@@ -248,14 +248,16 @@ pub(super) fn spawn_ai_worker(done: Sender<CorrectionDone>, ctx: egui::Context) 
     })
 }
 
-/// テンプレート補完の依頼 1 件。
+/// テンプレート補完の依頼 1 件。`prepared` は下ごしらえ済みの依頼(文脈・候補を添えた物)、`plan` は補完役の
+/// 指示文を作ったときの辞書と構造(描画に使う)。
 pub(super) struct AssistantJob {
-    pub(super) request: AssistantRequest,
+    pub(super) prepared: completion::Prepared,
+    pub(super) plan: Arc<Plan>,
     pub(super) assistant: Arc<dyn Assistant>,
 }
 
 pub(super) struct AssistantDone {
-    pub(super) result: Result<AssistantReply, String>,
+    pub(super) result: Result<Outcome, String>,
     pub(super) took: Duration,
 }
 
@@ -267,15 +269,26 @@ pub(super) fn spawn_assistant_worker(done: Sender<AssistantDone>, ctx: egui::Con
     };
     spawn_pool("補完", 1, done, ctx, failed, |job: AssistantJob| {
         let began = Instant::now();
-        let result = job.assistant.complete(&job.request);
+        let result = completion::run(job.assistant.as_ref(), &job.prepared, &job.plan);
         match &result {
-            Ok(reply) => diag::log(format!(
-                "補完 {} 字 → {} 字({:.2} 秒、{})",
-                job.request.request.chars().count(),
-                reply.text.as_ref().map_or(0, |t| t.chars().count()),
-                began.elapsed().as_secs_f32(),
-                job.assistant.name()
-            )),
+            // 依頼と本文の中身と文脈は残さない(患者の情報を含みうる)。経路・選択の数・退けた理由(テンプレートの
+            // モジュール名と行、守りの種類)だけ。
+            Ok(outcome) => {
+                diag::log(format!(
+                    "補完 {} 字 → {} 字({:.2} 秒、{}、{}、選択 {}/{}、呼んだ回数 {})",
+                    job.prepared.request.request.chars().count(),
+                    outcome.reply.text.as_ref().map_or(0, |t| t.chars().count()),
+                    began.elapsed().as_secs_f32(),
+                    job.assistant.name(),
+                    outcome.route.label(),
+                    outcome.kept.len(),
+                    outcome.claude_selections.len(),
+                    outcome.calls
+                ));
+                for reason in &outcome.dropped {
+                    diag::log(format!("補完: 選択を退けた({reason})"));
+                }
+            }
             Err(message) => diag::log(format!("補完エラー: {}", ascii_only(message))),
         }
         AssistantDone {

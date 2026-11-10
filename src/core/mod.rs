@@ -1,11 +1,15 @@
 //! 画面に依存しない中身。録音・切り出し・認識・訂正・転送・保存をここにまとめている。
 
 pub mod apple_speech;
+pub mod annotate;
 pub mod assistant;
 pub mod audio;
 pub mod caps_lock;
 pub mod claude_api;
+pub mod completion;
+pub mod context;
 pub mod corrector;
+pub mod device_state;
 pub mod diag;
 pub mod dictionary;
 pub mod editor_model;
@@ -25,7 +29,9 @@ pub mod session;
 pub mod settings;
 pub mod speechcpp;
 pub mod store;
+pub mod structure;
 pub mod template_library;
+pub mod template_md;
 pub mod text_filter;
 pub mod textio;
 pub mod transfer;

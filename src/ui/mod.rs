@@ -8,6 +8,7 @@ mod header;
 pub mod library;
 mod rows;
 mod settings;
+mod structure_view;
 pub mod theme;
 
 use crate::app::{MicState, VoiceApp, SCREENSHOT_FRAMES};
@@ -282,6 +283,24 @@ impl VoiceApp {
                     .map(|(index, _)| index);
                 if let (Some(tool), Some(index)) = (self.windows.dict.as_mut(), longest) {
                     tool.begin_edit(index, &self.data.dictionary.templates[index]);
+                }
+            }
+            // 撮影の確認用: 構造の変種が最も多いテンプレートを編集中にして「構造」を開く。
+            "structure" => {
+                self.open_dict_tool(Some(DictTab::Templates));
+                let busiest = self
+                    .data
+                    .dictionary
+                    .templates
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, t)| {
+                        self.annotations.structures.structure_for(t).map_or(0, |s| s.variants.len())
+                    })
+                    .map(|(index, _)| index);
+                if let (Some(tool), Some(index)) = (self.windows.dict.as_mut(), busiest) {
+                    tool.begin_edit(index, &self.data.dictionary.templates[index]);
+                    tool.open_structure = true;
                 }
             }
             "help" => self.windows.help = true,

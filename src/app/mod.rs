@@ -5,11 +5,13 @@
 //!       → 確定(話した順) → 転送(手直しがあれば学習)。
 //! 外部の音声認識 API(選んだとき): 文として入った発話の音を API にも送り、届いた文で差し替えてから AI 訂正へ。
 
+use crate::core::annotate::{Annotator, ApiAnnotator, ClaudeCodeAnnotator};
 use crate::core::apple_speech::AppleSpeech;
 use crate::core::assistant::{
-    self, MAX_TEMPLATES, match_call, ApiAssistant, Assistant, AssistantReply, AssistantRequest, Call,
-    ClaudeCodeAssistant,
+    self, MAX_TEMPLATES, match_call, ApiAssistant, Assistant, AssistantRequest, Call, ClaudeCodeAssistant,
 };
+use crate::core::completion::{self, Outcome, Plan, Route};
+use crate::core::structure::StructureFile;
 use crate::core::audio::{self, Playback};
 use crate::core::caps_lock::{self, CapsFollower, MicRequest, Watcher};
 use crate::core::corrector::{
@@ -52,6 +54,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+mod annotate_flow;
+pub use annotate_flow::{AnnotateFn, Annotations, StructureState};
 mod assistant_flow;
 mod caps;
 mod corrections;
@@ -145,6 +149,10 @@ pub struct ScreenshotJob {
 const MIC_SILENCE_CHECK: Duration = Duration::from_secs(2);
 /// 近くの iPhone を探し直す間隔。
 const IPHONE_SCAN_INTERVAL: Duration = Duration::from_secs(3);
+/// iPhone で録音中に連係が切れたときの知らせ。iPhone 側の「接続解除」でも圏外でも届くので断定しない。
+/// iPhone 側で切ると macOS が iPhone を隠し、Mac のスリープと復帰かケーブルの接続まで一覧に出ない(docs/iphone-release-fix.md)。
+pub const IPHONE_LOST: &str =
+    "iPhone との接続が切れました。iPhone 側で切ったときは、Mac を一度スリープさせるかケーブルでつなぐと戻ります";
 /// アクセシビリティの許可を確かめ直す間隔。
 const ACCESSIBILITY_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// AI への補足のファイルの更新時刻を見る間隔。
@@ -230,6 +238,8 @@ pub struct VoiceApp {
     pub guidance_chars: Option<usize>,
     /// 依頼の指示(`request.md`)の字数(設定画面の表示用)。読めないファイルなら None。
     pub request_guidance_chars: Option<usize>,
+    /// テンプレートの構造(`structure.json`)と裏の注釈(`annotate_flow.rs`、§16.8 の S2)。
+    pub annotations: Annotations,
 }
 
 /// 外部の音声認識 API を用意する。選んでいない・知らない provider・鍵が無いときは None(Haas だけで動く)。
@@ -423,20 +433,37 @@ pub fn make_corrector(
     }
 }
 
+/// テンプレートの注釈役を用意する(§16.8 の S2)。接続は訂正役と同じ設定(API キーか Claude Code)、
+/// モデルは `model`(アプリは Sonnet 固定、CLI は `--model`)。接続に必要なものが無ければ None。
+pub fn make_annotator(store: &Store, global: &GlobalSettings, model: &str) -> Option<Arc<dyn Annotator>> {
+    match global.corrector.backend {
+        CorrectorBackend::ApiKey => {
+            let key = store.load_api_key()?;
+            Some(Arc::new(ApiAnnotator::new(model, &key)))
+        }
+        CorrectorBackend::ClaudeCode => {
+            let binary = proc::find_claude()?;
+            Some(Arc::new(ClaudeCodeAnnotator::new(model, &binary, &store.root)))
+        }
+    }
+}
+
 /// 「ヘイ、クロード」の補完役を用意する。接続は訂正役と同じ設定(API キーか Claude Code)を使い、
 /// 訂正の有効・無効には従わない(呼びかけは利用者がその都度するので、訂正を止めていても使える)。
+/// 構造(`structure.json`)のあるテンプレートは指示文に行番号つきで載り、選択で答えさせる(単位 S3)。
 /// 接続に必要なものが無ければ None。
 pub fn make_assistant(
     store: &Store,
     global: &GlobalSettings,
     data: &UserData,
+    structures: &StructureFile,
 ) -> Option<Arc<dyn Assistant>> {
     let model = &global.corrector.model;
     let guidance = store.load_request_guidance();
     match global.corrector.backend {
         CorrectorBackend::ApiKey => {
             let key = store.load_api_key()?;
-            Some(Arc::new(ApiAssistant::new(model, &key, &data.dictionary, &guidance)))
+            Some(Arc::new(ApiAssistant::new(model, &key, &data.dictionary, structures, &guidance)))
         }
         CorrectorBackend::ClaudeCode => {
             let binary = proc::find_claude()?;
@@ -445,6 +472,7 @@ pub fn make_assistant(
                 &binary,
                 &store.root,
                 &data.dictionary,
+                structures,
                 &guidance,
             )))
         }
@@ -477,6 +505,9 @@ impl VoiceApp {
         if !app.global.first_run_shown && app.screenshot.is_none() {
             app.windows.first_run = true;
         }
+        // 未注釈のテンプレートを裏で注釈する(撮影では Claude を呼ばない)。
+        app.annotations.automatic = app.screenshot.is_none();
+        app.queue_annotations();
         app.check_accessibility(true);
         if !app.accessibility_ok && app.screenshot.is_none() {
             // Mac の確認画面を出す(一覧に載せてもらう)。すでに断られていれば何も出ない。
@@ -516,6 +547,10 @@ impl VoiceApp {
         if let Some(notice) = store.migrate_guidance() {
             diag::log(&notice);
         }
+        // 依頼の指示の引き継ぎ(単位 S3)。1.1.0 の既定のままなら新しい既定に書き換える。
+        if let Some(notice) = store.migrate_request_guidance() {
+            diag::log(&notice);
+        }
         let guidance_modified = store.guidance_modified();
         let guidance_chars = guidance_length(&store);
         let request_guidance_modified = store.request_guidance_modified();
@@ -525,6 +560,8 @@ impl VoiceApp {
         diag::log(format!("辞書 {}", dictionary_summary(&data.dictionary)));
         let corrector = make_corrector(&store, &global, &data);
         let remote = make_remote(&store, &global);
+        // 構造は派生なので、読めなければよけて空から(知らせは下の起動時の警告に入る)。
+        let structures = store.load_structure();
         theme::install_style(
             &ctx,
             data.settings.appearance.theme,
@@ -586,6 +623,7 @@ impl VoiceApp {
             },
             guidance_chars,
             request_guidance_chars,
+            annotations: Annotations::new(structures),
         }
     }
 
@@ -759,6 +797,7 @@ impl VoiceApp {
         self.scan_for_iphone(Instant::now());
         self.check_accessibility(false);
         self.receive_library();
+        self.receive_annotations();
         while let Ok(done) = self.corrections.remote_rx.try_recv() {
             self.receive_remote(done);
         }
@@ -795,6 +834,7 @@ impl VoiceApp {
                     generation,
                     message,
                 } => self.mic_failed(generation, message),
+                SessionEvent::MicLost { generation } => self.mic_lost(generation),
                 SessionEvent::Error(message) => self.notify_error(message),
             }
         }

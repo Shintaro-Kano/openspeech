@@ -201,7 +201,12 @@ pub(crate) fn run_mic_check(args: &[String]) -> i32 {
         .or_else(|| args.iter().any(|a| a == "--iphone").then(chosen_iphone).flatten());
     let (tx, rx) = std::sync::mpsc::channel();
     let began = Instant::now();
-    let capture = match audio::Capture::start(device.clone(), tx) {
+    let lost = std::sync::Arc::new(|error: audio::MicError| {
+        if error == audio::MicError::Gone {
+            println!("デバイスが無くなった(iPhone なら連係が切れた)");
+        }
+    });
+    let capture = match audio::Capture::start(device.clone(), tx, lost) {
         Ok(capture) => capture,
         Err(message) => {
             eprintln!("{message}");
@@ -256,6 +261,91 @@ pub(crate) fn run_mic_check(args: &[String]) -> i32 {
     }
 }
 
+/// `--release-check [--device 名前]`: 名前で開いて約 1 秒録り、閉じたあとでデバイスがまだ動いているかを
+/// CoreAudio から読む(docs/iphone-release-fix.md の B)。名前で開いたデバイスを閉じても IO が止まらない不具合
+/// (cpal 0.15 の循環参照)を確かめる。デバイスを省くと、見えている iPhone、無ければ OS の既定のマイクを名前で開く。
+/// 止まれば 0、動いたままなら 2、開けなければ 1。ほかのアプリが同じマイクを使っていると結果が濁るので、開く前の状態も出す。
+pub(crate) fn run_release_check(args: &[String]) -> i32 {
+    use openspeech::core::device_state::{device_running, DeviceRunning};
+    use openspeech::core::audio::MicSource as _;
+    /// 閉じたあと、止まるのを待つ上限。
+    const SETTLE: Duration = Duration::from_secs(2);
+    let named = argument_value(args, "--device").filter(|value| !value.starts_with("--"));
+    if args.iter().any(|a| a == "--device") && named.is_none() {
+        eprintln!("--device の後ろにデバイスの名前を書いてください(--list-devices で一覧)");
+        return 1;
+    }
+    let device = named
+        .cloned()
+        .or_else(chosen_iphone)
+        .or_else(|| audio::CpalMic.default_device());
+    let Some(device) = device else {
+        eprintln!("録音デバイスが見つかりません。--device で名前を指定してください");
+        return 1;
+    };
+    let show = |state: Result<DeviceRunning, String>| match state {
+        Ok(state) => format!(
+            "{}(このプロセス: {})",
+            if state.somewhere { "動いている" } else { "止まっている" },
+            if state.here { "動いている" } else { "止まっている" }
+        ),
+        Err(message) => message,
+    };
+    println!("device: {}", audio::display_device_name(&device));
+    let before = device_running(&device);
+    println!("開く前: {}", show(before.clone()));
+    // 見つからない名前を開くと既定のマイクへ落ちる(聞き役が付かない道)ので、確かめにならない。開く前に断る。
+    if before.is_err() {
+        return 1;
+    }
+    if before.as_ref().is_ok_and(|state| state.somewhere) {
+        println!("  (ほかのアプリがこのマイクを使っている。閉じたあとの結果は当てにならない)");
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let began = Instant::now();
+    let capture = match audio::Capture::start(Some(device.clone()), tx, std::sync::Arc::new(|_| {})) {
+        Ok(capture) => capture,
+        Err(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
+    };
+    println!("開いた: {:.2} 秒", began.elapsed().as_secs_f32());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut samples = 0usize;
+    while Instant::now() < deadline {
+        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(50)) {
+            samples += chunk.len();
+        }
+    }
+    println!("録音中: {}(届いた標本 {samples})", show(device_running(&device)));
+    let closing = Instant::now();
+    drop(capture);
+    println!("閉じた: {:.2} 秒", closing.elapsed().as_secs_f32());
+    let closed = Instant::now();
+    let mut state = device_running(&device);
+    while state.as_ref().is_ok_and(|state| state.somewhere) && closed.elapsed() < SETTLE {
+        std::thread::sleep(Duration::from_millis(100));
+        state = device_running(&device);
+    }
+    println!(
+        "閉じたあと({:.1} 秒): {}",
+        closed.elapsed().as_secs_f32(),
+        show(state.clone())
+    );
+    match state {
+        Ok(state) if state.somewhere => {
+            println!("結果: 動いている(閉じても放していない)");
+            2
+        }
+        Ok(_) => {
+            println!("結果: 止まっている");
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
 /// `--latency-check [秒]`(`--iphone` / `--device 名前` / `--save フォルダ` を併用可):
 /// 録音 → 切り出し → 認識の各段階の時刻を出し、どこで待っているかを見る。設定はいつものものを使う。
 /// `--save` を付けると、切り出した音をそのフォルダに utt_NN.wav として残す(認識の切り分け用)。
@@ -292,7 +382,7 @@ pub(crate) fn run_latency_check(args: &[String]) -> i32 {
         recognizer.as_ref().map_or("なし".to_string(), |r| r.name())
     );
     let (tx, rx) = std::sync::mpsc::channel();
-    let capture = match audio::Capture::start(device, tx) {
+    let capture = match audio::Capture::start(device, tx, std::sync::Arc::new(|_| {})) {
         Ok(capture) => capture,
         Err(message) => {
             eprintln!("{message}");

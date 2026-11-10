@@ -29,11 +29,17 @@ const LATERALITY_FORMS: [(&str, char); 18] = [
 
 /// 左右の語を、出てきた順に並べる。
 fn laterality_signature(text: &str) -> Vec<char> {
+    side_positions(text).into_iter().map(|(_, side)| side).collect()
+}
+
+/// 左右の語と、その語の直後の位置(バイト)。出てきた順。数え方は `laterality_signature` と同じ。
+pub fn side_positions(text: &str) -> Vec<(usize, char)> {
     let is_letter = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphabetic());
-    let mut signature = Vec::new();
+    let mut found_sides = Vec::new();
     let mut previous = None;
-    let mut rest = text;
-    while let Some(c) = rest.chars().next() {
+    let mut at = 0;
+    while let Some(c) = text[at..].chars().next() {
+        let rest = &text[at..];
         let found = LATERALITY_FORMS.iter().find(|(form, _)| {
             rest.starts_with(form)
                 && (!form.is_ascii()
@@ -41,17 +47,17 @@ fn laterality_signature(text: &str) -> Vec<char> {
         });
         match found {
             Some((form, side)) => {
-                signature.push(*side);
-                rest = &rest[form.len()..];
+                at += form.len();
+                found_sides.push((at, *side));
                 previous = form.chars().last();
             }
             None => {
-                rest = &rest[c.len_utf8()..];
+                at += c.len_utf8();
                 previous = Some(c);
             }
         }
     }
-    signature
+    found_sides
 }
 
 /// 直す前と後で左右の語が変わるか。左右の取り違えは見落とすと重大なので、機械には変えさせず、
@@ -66,6 +72,13 @@ pub fn changes_laterality(before: &str, after: &str) -> bool {
 pub fn adds_laterality(before: &str, after: &str) -> bool {
     let count = |text: &str, side: char| laterality_signature(text).iter().filter(|c| **c == side).count();
     ['右', '左'].iter().any(|side| count(after, *side) > count(before, *side))
+}
+
+/// 右系・左系の語の数(右, 左)。数え方は `adds_laterality` と同じ。補完の選択の左右の門(§16.6 の L5)に使う。
+pub fn side_counts(text: &str) -> (usize, usize) {
+    let signature = laterality_signature(text);
+    let count = |side: char| signature.iter().filter(|c| **c == side).count();
+    (count('右'), count('左'))
 }
 
 /// 否定を表す語。あるかないかが変わる直しは、誤認識ではなく内容の変更とみなす。

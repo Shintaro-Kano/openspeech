@@ -3,7 +3,8 @@
 #
 # What this script does (the complete list):
 #   1. Checks the Mac: macOS, Apple Silicon (also under Rosetta), macOS 15 or later
-#   2. Downloads VERSION, the app archive and its SHA-256 file, and checks the archive against it
+#   2. Downloads VERSION, the app archive and its SHA-256 file from the latest GitHub release
+#      (github.com/Shintaro-Kano/openspeech), and checks the archive against it
 #   3. Unpacks into a temporary folder and checks the signature and the bundled library
 #   4. Stops if OpenSpeech is running (it asks you to quit it; text in its editor is not saved)
 #   5. Installs OpenSpeech.app where it already is, otherwise into /Applications
@@ -63,7 +64,8 @@ main() {
   trap cleanup EXIT
   trap 'exit 130' INT HUP TERM
   HOME="${HOME%/}"
-  BASE_URL="${OPENSPEECH_BASE_URL:-https://openspeech.unitedradiology.jp/dl}"
+  # The files come from the latest GitHub release (the site itself serves only this script).
+  BASE_URL="${OPENSPEECH_BASE_URL:-https://github.com/Shintaro-Kano/openspeech/releases/latest/download}"
   BASE_URL="${BASE_URL%/}"
 
   # ---- environment checks ----

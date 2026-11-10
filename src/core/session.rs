@@ -1,7 +1,7 @@
 //! 音声入力の流れ: 録音 → 発話の切り出し → 認識。
 //! 画面が隠れていても止まらないよう、画面とは別のスレッドで動かす。
 
-use super::audio::{CpalMic, MicSource};
+use super::audio::{CpalMic, MicError, MicErrorSink, MicSource};
 use super::diag;
 use super::recognizer::{Recognition, RecognizeOptions, Recognizer};
 use super::segmenter::{rms, Segmenter, SegmenterConfig, VoiceJudge, SAMPLE_RATE};
@@ -37,6 +37,10 @@ pub enum SessionEvent {
     MicFailed {
         generation: u64,
         message: String,
+    },
+    /// 録音中にデバイスが無くなった(cpal の `DeviceNotAvailable`)。iPhone なら連係が切れた。
+    MicLost {
+        generation: u64,
     },
     Error(String),
 }
@@ -275,9 +279,23 @@ impl Session {
                 return;
             }
             let began = Instant::now();
-            let capture = match source.open(device, sample_tx) {
+            let lost: MicErrorSink = {
+                let events = events.clone();
+                let wake = wake.clone();
+                Arc::new(move |error| {
+                    if error == MicError::Gone {
+                        let _ = events.send(SessionEvent::MicLost { generation });
+                        wake();
+                    }
+                })
+            };
+            let capture = match source.open(device, sample_tx, lost) {
                 Ok(capture) => capture,
                 Err(message) => {
+                    diag::log(format!(
+                        "録音を開けなかった({:.2} 秒)",
+                        began.elapsed().as_secs_f32()
+                    ));
                     let _ = events.send(SessionEvent::MicFailed {
                         generation,
                         message,
@@ -286,11 +304,19 @@ impl Session {
                     return;
                 }
             };
+            let took = began.elapsed();
             // 開いている間に止められていたら、すぐ閉じる。
             if stop_requested(&command_rx) {
+                let closing = Instant::now();
+                drop(capture);
+                diag::log(format!(
+                    "開いている途中で止められたため、開き終えてすぐ閉じた(開く {:.2} 秒、閉じる {:.2} 秒)",
+                    took.as_secs_f32(),
+                    closing.elapsed().as_secs_f32()
+                ));
                 return;
             }
-            let took = began.elapsed();
+            diag::log(format!("録音を開いた({:.2} 秒)", took.as_secs_f32()));
             live.reset_signal();
             let _ = events.send(SessionEvent::MicOpened { generation, took });
             wake();
@@ -314,7 +340,9 @@ impl Session {
                 judge,
             );
             // 語尾まで録り終えてからマイクを閉じる。
+            let closing = Instant::now();
             drop(capture);
+            diag::log(format!("録音を閉じた({:.2} 秒)", closing.elapsed().as_secs_f32()));
         }));
         self.feeder = Some(command_tx);
         generation

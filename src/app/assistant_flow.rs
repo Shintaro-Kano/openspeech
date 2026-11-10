@@ -137,6 +137,12 @@ pub(super) struct RequestState {
     pub(super) began: Option<Instant>,
     /// 直前に補完した発話(番号と本文)。手付かずで残っていれば、次の依頼で言い直しとして置き換える。
     pub(super) last_completion: Option<(u64, String)>,
+    /// 直前に補完したテンプレートの名前(検査名の無い依頼で候補が複数のときの手がかり。§16.14)。
+    pub(super) last_template: Option<String>,
+    /// 補完役の指示文を作ったときの辞書と構造(描画に使う。§16.6)。補完役を作り直すか構造が変わると作り直す。
+    pub(super) plan: Arc<Plan>,
+    /// 補完役が差し替えられた物(試験の偽物)か。構造が変わっても作り直さない。
+    pub(super) custom: bool,
     /// 転送の途中に戻った補完の答え(送り終えてから当てる)。
     pub(super) held: Option<AssistantDone>,
     /// Esc で取りやめた依頼の数。その分の答えは捨てる。
@@ -161,6 +167,9 @@ impl RequestState {
             call_waiting: None,
             began: None,
             last_completion: None,
+            last_template: None,
+            plan: Arc::new(Plan::new(Dictionary::default(), StructureFile::default())),
+            custom: false,
             held: None,
             discarded: 0,
             sent: None,
@@ -174,8 +183,12 @@ impl VoiceApp {
     // ---- 「ヘイ、クロード」のテンプレート補完(単位 B) ----
 
     /// 補完役を用意する(設定の接続方法で)。辞書が変わるとテンプレート一覧も変わるので、訂正役と一緒に作り直す。
+    /// 構造(`structure.json`)が変わったときも作り直す(指示文に構造が載るため。`refresh_assistant_structure`)。
     pub fn rebuild_assistant(&mut self) {
-        self.requests.assistant = make_assistant(&self.store, &self.global, &self.data);
+        self.requests.custom = false;
+        self.requests.assistant =
+            make_assistant(&self.store, &self.global, &self.data, &self.annotations.structures);
+        self.refresh_plan();
         if self.requests.assistant.is_some() {
             self.start_assistant_worker();
         }
@@ -184,7 +197,24 @@ impl VoiceApp {
     /// 補完役を差す(試験は偽物を渡す)。
     pub fn enable_assistant(&mut self, assistant: Arc<dyn Assistant>) {
         self.requests.assistant = Some(assistant);
+        self.requests.custom = true;
+        self.refresh_plan();
         self.start_assistant_worker();
+    }
+
+    /// 描画に使う辞書と構造の控えを、今の物で作り直す。
+    fn refresh_plan(&mut self) {
+        self.requests.plan = Arc::new(Plan::new(self.data.dictionary.clone(), self.annotations.structures.clone()));
+    }
+
+    /// 構造が変わったあと(注釈が届いた、確認表で直した): 補完役の指示文と描画の控えを作り直す。
+    /// 差し替えた補完役(試験の偽物)は作り直さず、控えだけ新しくする。
+    pub(super) fn refresh_assistant_structure(&mut self) {
+        if self.requests.custom || self.requests.assistant.is_none() {
+            self.refresh_plan();
+        } else {
+            self.rebuild_assistant();
+        }
     }
 
     pub(super) fn start_assistant_worker(&mut self) {
@@ -563,8 +593,25 @@ impl VoiceApp {
             request: text.clone(),
             previous,
             target: target.map(|(_, _, t)| t),
+            ..AssistantRequest::default()
         };
-        if jobs.send(AssistantJob { request, assistant }).is_err() {
+        // 文脈・程度語・候補を添える(決定論。§16.6・§16.14)。中身は残さず、取れた物の種類だけ。
+        // 差し替えた補完役(試験の偽物)には守るべき指示文の控えが無いので、今の辞書と構造で作り直す。
+        let plan = if self.requests.custom {
+            Arc::new(Plan::new(self.data.dictionary.clone(), self.annotations.structures.clone()))
+        } else {
+            self.requests.plan.clone()
+        };
+        let prepared = completion::prepare(request, self.requests.last_template.as_deref(), &plan);
+        diag::log(format!(
+            "依頼の下ごしらえ: 文脈 {}、程度語 {} 個、検査名{}、候補 {} 件{}",
+            if prepared.request.context.is_empty() { "なし" } else { "あり" },
+            prepared.extracted.grades.len(),
+            if prepared.named.is_some() { "あり" } else { "なし" },
+            prepared.candidates.len(),
+            prepared.hint.map_or(String::new(), |(_, from)| format!("({from})"))
+        ));
+        if jobs.send(AssistantJob { prepared, plan, assistant }).is_err() {
             self.notify_error("Claude への依頼を送れませんでした");
             return;
         }
@@ -583,13 +630,15 @@ impl VoiceApp {
         }
         let AssistantDone { result, took } = done;
         let sent = self.requests.sent.take();
-        let reply = match result {
-            Ok(reply) => reply,
+        let outcome = match result {
+            Ok(outcome) => outcome,
             Err(message) => {
                 self.notify_error(message);
                 return;
             }
         };
+        let extra = completion_notice_extra(&outcome);
+        let reply = outcome.reply;
         if reply.kind == ReplyKind::Edit {
             if let Some(text) = reply.text.clone() {
                 self.receive_edit(sent, &text, reply.reply.as_deref(), took);
@@ -605,7 +654,11 @@ impl VoiceApp {
             self.notify(why);
             return;
         };
-        let template = reply.template.unwrap_or_else(|| "テンプレート".to_string());
+        let template = outcome
+            .template
+            .or(reply.template)
+            .unwrap_or_else(|| "テンプレート".to_string());
+        self.requests.last_template = Some(template.clone());
         let replaced = self
             .requests.last_completion
             .as_ref()
@@ -634,11 +687,12 @@ impl VoiceApp {
             template.chars().count(),
             if replaced.is_some() { "置き換えた" } else { "入れた" }
         ));
-        self.notify(if replaced.is_some() {
+        let head = if replaced.is_some() {
             format!("テンプレート「{template}」を補完し直しました({seconds:.1} 秒)")
         } else {
             format!("テンプレート「{template}」を補完しました({seconds:.1} 秒)")
-        });
+        };
+        self.notify(format!("{head}{extra}"));
     }
 
     /// 手直しの答えを当てる。門を順に通し(対象が無い・その間に文章が変わった・左右・長さ・同じ文)、通れば
@@ -760,6 +814,36 @@ impl VoiceApp {
         self.notify("Claude への依頼を取りやめました");
         true
     }
+}
+
+/// 補完の知らせに足す文(§16.9・§16.14): 文脈は本文に出ないので書く。検査名が無く候補が複数なら他の候補、
+/// 候補に無いテンプレートならその旨。退けた選択と、描画できず全文で補完したときはその理由。
+fn completion_notice_extra(outcome: &Outcome) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if outcome.route != Route::NotTemplate && !outcome.context.is_empty() {
+        parts.push(format!("文脈: {}", outcome.context));
+    }
+    parts.extend(outcome.context_notes.iter().cloned());
+    if outcome.off_candidates {
+        parts.push("候補に無いテンプレートでした".to_string());
+    } else if !outcome.other_candidates.is_empty() {
+        parts.push(format!("候補は{}もありました", outcome.other_candidates.join("・")));
+    }
+    if let Some(first) = outcome.dropped.first() {
+        let more = if outcome.dropped.len() > 1 { format!(" ほか {} 件", outcome.dropped.len() - 1) } else { String::new() };
+        parts.push(format!("置かなかった所見: {first}{more}"));
+    }
+    // 描画で捨てた行・補えなかった〔　〕の行・程度で絞らなかった選択など(§16.13「返されなければ知らせる」)。
+    if let Some(first) = outcome.warnings.first() {
+        let more = if outcome.warnings.len() > 1 { format!(" ほか {} 件", outcome.warnings.len() - 1) } else { String::new() };
+        parts.push(format!("{first}{more}"));
+    }
+    match &outcome.route {
+        Route::Fallback(why) => parts.push(format!("構造で置けなかったので全文で補完しました({why})")),
+        Route::Retried(why) => parts.push(format!("選択で答え直させました({why})")),
+        _ => {}
+    }
+    parts.iter().map(|p| format!("。{p}")).collect()
 }
 
 #[cfg(test)]
