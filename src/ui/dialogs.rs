@@ -65,11 +65,8 @@ impl VoiceApp {
                 r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             };
             ui.label(RichText::new("単語").strong());
-            let word = ui.add(
-                egui::TextEdit::singleline(&mut form.word)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("登録する単語"),
-            );
+            let word =
+                ui.add(egui::TextEdit::singleline(&mut form.word).desired_width(f32::INFINITY));
             if first {
                 word.request_focus();
             }
@@ -77,12 +74,9 @@ impl VoiceApp {
                 submit = true;
             }
             ui.add_space(4.0);
-            ui.label(RichText::new("読み(省略できます)").strong());
-            let reading = ui.add(
-                egui::TextEdit::singleline(&mut form.reading)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("ひらがな"),
-            );
+            ui.label(RichText::new("読み").strong());
+            let reading =
+                ui.add(egui::TextEdit::singleline(&mut form.reading).desired_width(f32::INFINITY));
             if enter(&reading, ui) {
                 submit = true;
             }
@@ -242,7 +236,7 @@ impl VoiceApp {
                 }
                 ui.add_space(6.0);
                 theme::section(ui, "テンプレート", &p);
-                ui.label("「辞書」の「テンプレート」か、辞書ファイル(dictionary.json)の templates に、検査名(キーワード)と正常所見(文章)を登録します。キーワードに続けて「テンプレート」と話すと(「前立腺MRIテンプレート」)、登録した文章が入ります。キーワードだけなら普通の語です。");
+                ui.label("「辞書」の「テンプレート」か、辞書ファイル(dictionary.json)の templates に、検査名(キーワード)と正常所見(文章)を登録します。キーワードに続けて「テンプレート」と話すと、登録した文章が入ります。キーワードのみの発声ではテンプレートは呼び出されません。");
                 ui.label("文の途中では働きません。エディターでは Esc で取り消せます。AI 訂正と学習の対象にはなりません。");
                 ui.label("「ヘイクロード、前立腺MRIのテンプレート。サイズは5.5かける4.5かける5.0」と話すと、Claude がテンプレートを選び、言われた値を入れた文章を入れます。所見モジュール(「PI-RADS カテゴリー4/5」など)を登録しておくと、依頼でその所見が言われたとき Claude が正常所見の文と差し替えます。呼びかけだけなら次の発話が依頼です(設定「音声コマンド」で言葉を変えられます)。");
                 ui.label("文章を選んで(選ばなければ全文)「ヘイクロード、意味が一貫するように整えて」のように頼むと、直した文で置き換えます(直後の Esc で戻せます)。依頼の文、エディターの文章(選んだ範囲か全文、先頭 3000 字)、テンプレートの一覧が Claude に送られます。");
